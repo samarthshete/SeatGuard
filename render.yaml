@@ -1,0 +1,33 @@
+services:
+  # TicketBlitz Unified Service (API + Worker)
+  - type: web
+    name: ticket-blitz-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:api
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: SINGLE_PROCESS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ticket-blitz-db
+          property: connectionString
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        value: 6379
+      - key: KAFKA_BROKERS
+        sync: false
+      - key: KAFKA_USERNAME
+        sync: false
+      - key: KAFKA_PASSWORD
+        sync: false
+
+databases:
+  - name: ticket-blitz-db
+    plan: free

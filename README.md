@@ -1,80 +1,99 @@
 # SeatGuard
 
-SeatGuard is a TypeScript backend prototype for event seat reservation workflows. It focuses on the core consistency problem in booking systems: preventing conflicting reservations while coordinating database writes, Redis locks, and Kafka-compatible event messages.
+SeatGuard is a TypeScript backend prototype for experimenting with event seat reservation workflows. It models users, events, seats, and bookings with Prisma/PostgreSQL, exposes a small Fastify API, and includes a separate worker path that consumes booking requests from Kafka-compatible messaging and uses Redis locks around seat processing.
 
-This README intentionally describes the repository as a prototype based on the visible code and configuration. Public deployment, load-test metrics, production uptime, and real user traffic are not claimed here.
+This is not presented as a deployed production system. The repository does not currently include verified production usage, public uptime, load-test results, or real user metrics.
 
-## Problem Solved
+## What The Project Actually Does
 
-Seat booking systems need to handle multiple users attempting to reserve the same inventory. SeatGuard explores backend patterns for that problem:
+From the current source and configuration, SeatGuard includes:
 
-- A PostgreSQL-backed reservation data model.
-- Redis-backed lock and cache infrastructure.
-- Kafka-compatible messaging through Redpanda for event-driven workflows.
-- TypeScript service code with runtime validation.
-- Docker Compose infrastructure for local development.
+- A Fastify API server in `src/index.ts`.
+- A Prisma data model for `User`, `Event`, `Seat`, and `Booking` in `prisma/schema.prisma`.
+- PostgreSQL, Redis, and Redpanda services in `docker-compose.yml`.
+- A worker in `src/worker.ts` that subscribes to a `booking-requests` topic, uses a Redis lock key per seat, writes bookings through Prisma, and publishes seat updates through Redis pub/sub.
+- A direct API booking path intended for a quick demo mode.
+- A deliberately naive booking path for demonstrating a race-condition-prone implementation.
 
-## Key Features
+## Current API Routes
 
-- Node.js/TypeScript backend.
-- Fastify HTTP server dependencies.
-- Prisma client and migrations support.
-- Redis dependency for lock-oriented reservation flow design.
-- KafkaJS dependency for event publishing/consuming patterns.
-- Redpanda container in Docker Compose as the local Kafka-compatible broker.
-- PostgreSQL and Redis containers for local infrastructure.
-- OpenTelemetry dependencies for future distributed tracing support.
+The routes below are present in `src/index.ts`:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/health` | Basic health check with status and timestamp. |
+| `POST` | `/api/book-async` | Attempts to book a seat directly through the API demo path. |
+| `POST` | `/api/book-naive` | Demonstrates a race-condition-prone read-delay-write booking flow. |
+| `GET` | `/api/random-seat` | Returns one available seat for testing. |
+| `GET` | `/api/seats` | Returns all seats ordered by ID. |
+
+Note: `src/index.ts` currently contains two `POST /api/book-async` definitions. That should be cleaned up before treating the API server as stable.
 
 ## Tech Stack
 
 | Area | Technology |
 |---|---|
 | Runtime | Node.js, TypeScript |
-| API | Fastify, Zod |
+| API | Fastify, Zod dependency, CORS plugin |
 | Database | PostgreSQL, Prisma |
-| Cache / locking | Redis, ioredis |
-| Messaging | KafkaJS, Redpanda |
-| Realtime / sockets | Socket.io dependency present |
-| Observability | OpenTelemetry dependencies present |
-| DevOps | Docker Compose |
+| Locking / pub-sub | Redis, ioredis |
+| Messaging | KafkaJS, Redpanda as the local Kafka-compatible broker |
+| Realtime | Socket.io dependency and seat-update emit path |
+| Observability | OpenTelemetry dependencies and `src/tracing` import |
+| Local infrastructure | Docker Compose |
 
 ## Architecture
 
 ```text
-Client / API caller
+Fastify API (`src/index.ts`)
    |
-   v
-Fastify API service
+   +--> Prisma Client --> PostgreSQL
    |
-   +--> Redis for reservation locks / temporary state
+   +--> Socket.io seat update emit path
    |
-   +--> PostgreSQL through Prisma for durable booking data
+   +--> Demo booking endpoints
+
+Worker (`src/worker.ts`)
    |
-   +--> Redpanda/Kafka topic for booking-related events
+   +--> KafkaJS consumer: booking-requests topic
    |
-   +--> Worker process for asynchronous event handling
+   +--> Redis lock: lock:seat:<seatNumber>
+   |
+   +--> Prisma Client --> PostgreSQL
+   |
+   +--> Redis pub/sub: seat-updates channel
+
+Local infrastructure (`docker-compose.yml`)
+   |
+   +--> PostgreSQL
+   +--> Redis
+   +--> Redpanda
 ```
 
-The repository scripts expose separate API and worker entry points:
+## Data Model
 
-```json
-"dev:api": "ts-node src/index.ts",
-"dev:worker": "ts-node src/worker.ts",
-"start:api": "npx prisma migrate deploy && node dist/index.js",
-"start:worker": "node dist/worker.js"
-```
+The Prisma schema defines:
+
+- `User`: unique email, optional name, related bookings.
+- `Event`: event name/date/seat count, related seats.
+- `Seat`: seat number, row, status, version, related event, optional booking.
+- `Booking`: user-seat reservation record with unique `seatId`.
+
+The schema includes `@@unique([eventId, number])` for seats and `seatId @unique` for bookings, which are useful consistency constraints for a reservation system.
 
 ## Project Structure
 
-Exact source layout may evolve, but the repository configuration points to this backend-centered structure:
-
 ```text
 SeatGuard/
-|-- src/                     # TypeScript API and worker source
-|-- prisma/                  # Prisma schema and migrations, if present
-|-- docker-compose.yml       # PostgreSQL, Redis, Redpanda
-|-- package.json             # scripts and dependencies
-|-- tsconfig.json            # TypeScript compiler config, if present
+|-- src/
+|   |-- index.ts          # Fastify API server and demo booking routes
+|   |-- worker.ts         # Kafka consumer, Redis lock, Prisma booking worker
+|   `-- tracing.ts        # Imported tracing setup, if configured
+|-- prisma/
+|   `-- schema.prisma     # User, Event, Seat, Booking models
+|-- docker-compose.yml    # PostgreSQL, Redis, Redpanda
+|-- package.json          # scripts and dependencies
+|-- tsconfig.json         # TypeScript compiler config, if present
 `-- README.md
 ```
 
@@ -82,15 +101,24 @@ SeatGuard/
 
 Create a local `.env` file for runtime configuration. Do not commit real secrets.
 
-Example placeholders:
-
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/ticket_blitz
-REDIS_URL=redis://localhost:6379
+REDIS_HOST=localhost
+REDIS_PORT=6379
 KAFKA_BROKERS=localhost:9092
 PORT=3000
-NODE_ENV=development
+SINGLE_PROCESS=false
 ```
+
+The Docker Compose file starts PostgreSQL with these local development defaults:
+
+```env
+POSTGRES_USER=user
+POSTGRES_PASSWORD=password
+POSTGRES_DB=ticket_blitz
+```
+
+Use different credentials for any non-local environment.
 
 ## Run Locally
 
@@ -111,9 +139,10 @@ Start local infrastructure:
 docker compose up -d
 ```
 
-Apply database migrations if Prisma schema/migrations are present:
+Generate Prisma client and apply migrations if migrations are present:
 
 ```bash
+npx prisma generate
 npx prisma migrate deploy
 ```
 
@@ -129,40 +158,51 @@ Run the worker in a second terminal:
 npm run dev:worker
 ```
 
-## Testing
+Build TypeScript:
 
-`package.json` currently contains a placeholder `test` script. Add real unit/integration tests before treating this as a production-ready booking system.
+```bash
+npm run build
+```
 
-Suggested test coverage:
+## Testing Status
 
-- Reservation lock acquire/release behavior.
-- Duplicate reservation attempts for the same seat.
-- Database transaction rollback paths.
-- Event publishing and worker idempotency.
-- API validation failures.
+`package.json` currently contains a placeholder test script:
 
-## Technical Decisions
+```bash
+npm test
+```
 
-- Use Redis as a fast coordination layer for seat-level locks.
-- Use PostgreSQL as the durable source of truth for reservations.
-- Use Redpanda locally to develop Kafka-compatible event flows without requiring an external Kafka cluster.
-- Keep API and worker processes separate so synchronous booking work and asynchronous event handling can evolve independently.
+At the moment, that script exits with "Error: no test specified". Add real tests before relying on the project for correctness.
+
+Suggested tests:
+
+- `POST /api/book-naive` behavior for unavailable seats.
+- `POST /api/book-async` success and conflict paths.
+- Prisma constraints for one booking per seat.
+- Worker Redis lock acquire/release behavior.
+- Worker handling of unavailable seats.
+- Kafka message parsing and malformed payload handling.
 
 ## Current Limitations
 
-- No verified public live demo is documented.
-- No verified production/load/user metrics are included.
-- The test script is currently a placeholder.
-- Deployment manifests and monitoring dashboards should be added before production use.
+- The README does not claim a live deployment because no verified deployment evidence was found.
+- The README does not claim production readiness, uptime, traffic, or performance numbers.
+- The API file currently has duplicate `POST /api/book-async` route definitions that should be consolidated.
+- Kafka is commented out in the API path; Kafka consumption exists in the worker path.
+- Redis locking is implemented in the worker path, not in the direct API demo path.
+- Automated tests need to be added.
+- API documentation should be expanded after the route structure is cleaned up.
 
-## Future Goals
+## Future Improvements
 
-- Add real automated tests for concurrency and reservation conflicts.
-- Add API documentation for reservation endpoints.
-- Add load-test scripts and publish only reproducible results.
-- Add CI for linting, type-checking, tests, and migration checks.
-- Add observability dashboards once instrumentation is wired end to end.
+- Consolidate duplicate booking routes.
+- Decide whether booking should happen through the direct API path, the Kafka worker path, or both.
+- Add tests for route behavior, database constraints, and worker locking.
+- Add seed data and a documented local demo flow.
+- Add CI for type-checking, linting, and tests.
+- Add reproducible load-test scripts before publishing any performance claims.
+- Add deployment documentation only after a real deployment exists.
 
 ## License
 
-The repository currently declares `ISC` in `package.json` unless a separate license file is added.
+`package.json` currently declares the project license as `ISC`.

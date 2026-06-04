@@ -1,4 +1,4 @@
-# 🎟️ TicketBlitz - High-Concurrency Event Booking System
+# 🎟️ SeatGuard - High-Concurrency Event Booking System
 
 [![Tests](https://github.com/Abhics8/Ticket-Blitz/actions/workflows/ci.yml/badge.svg)](https://github.com/Abhics8/Ticket-Blitz/actions)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](https://www.docker.com/)
@@ -236,7 +236,7 @@ sequenceDiagram
 
 ## 🌐 Kubernetes & Horizontal Scaling
 
-Ticket-Blitz is natively designed to scale horizontally across commodity hardware.
+SeatGuard is natively designed to scale horizontally across commodity hardware.
 
 **To add more API instances behind a load balancer:**
 1. Our provided Kubernetes `hpa.yaml` automatically scales the fastify API layer on CPU utilization > 70%.

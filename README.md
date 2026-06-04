@@ -69,7 +69,7 @@ BookingCancelled → triggers: release inventory, initiate refund
 
 ## 🎯 Problem Statement
 
-Major ticketing platforms like Ticketmaster face **revenue losses of $15M+ annually** from race conditions during high-demand sales (Taylor Swift, Sports Finals), where simultaneous purchases cause **double-booking** and **inventory inconsistencies**. TicketBlitz eliminates these issues using **distributed Redis locks**, **optimistic concurrency control**, and **event-driven architecture** to guarantee seat uniqueness even under **high concurrent checkout requests**, while providing a **real-time engineering visualizer** that exposes the internal mechanics of distributed systems for educational purposes.
+Major ticketing platforms like Ticketmaster face **revenue losses of $15M+ annually** from race conditions during high-demand sales (Taylor Swift, Sports Finals), where simultaneous purchases cause **double-booking** and **inventory inconsistencies**. SeatGuard eliminates these issues using **distributed Redis locks**, **optimistic concurrency control**, and **event-driven architecture** to guarantee seat uniqueness even under **high concurrent checkout requests**, while providing a **real-time engineering visualizer** that exposes the internal mechanics of distributed systems for educational purposes.
 
 ---
 
@@ -616,7 +616,7 @@ TicketBlitz includes an educational dashboard showing internal system behavior i
 </KafkaStreamViewer>
 ```
 
-This visualization makes TicketBlitz an **excellent teaching tool** for distributed systems concepts.
+This visualization makes SeatGuard an **excellent teaching tool** for distributed systems concepts.
 
 > **Watch the system in action:**
 > ![Real-Time Visualizer Demo](assets/visualizer-demo.gif)

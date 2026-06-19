@@ -1,6 +1,6 @@
 # 🎟️ SeatGuard - High-Concurrency Event Booking System
 
-[![Tests](https://github.com/Abhics8/Ticket-Blitz/actions/workflows/ci.yml/badge.svg)](https://github.com/Abhics8/Ticket-Blitz/actions)
+
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Redis](https://img.shields.io/badge/Redis-Distributed_Locking-DC382D?logo=redis)](https://redis.io/)
@@ -12,7 +12,7 @@
 
 > **Production-grade ticket booking platform handling high concurrency with zero race conditions, featuring real-time engineering visualization**
 
-[🚀 Live Demo](#) | [📊 API Docs](#) | [🎥 System Demo](#) | [💼 Portfolio](https://abhics8.github.io/Portfolio)
+[🚀 Live Demo](#) | [📊 API Docs](#) | [🎥 System Demo](#) | 
 
 ---
 
@@ -335,7 +335,7 @@ Kafka 3.5+ (or use Docker Compose)
 
 ```bash
 # Clone repository
-git clone https://github.com/Abhics8/Ticket-Blitz.git
+git clone https://github.com/samarthshete/SeatGuard
 cd Ticket-Blitz
 
 # Install dependencies

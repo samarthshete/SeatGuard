@@ -7,20 +7,30 @@ interface MetricRecord {
     timestamp: Date;
 }
 
-export default function Visualizer({ metrics }: { metrics: any }) {
+export interface TelemetryMetrics {
+    locksAcquired: number;
+    kafkaEvents: number;
+    dbWrites: number;
+    lastActionType: 'LOCK' | 'KAFKA' | 'DB';
+    lastActionMessage: string;
+}
+
+export default function Visualizer({ metrics }: { metrics: TelemetryMetrics }) {
     const [logs, setLogs] = useState<MetricRecord[]>([]);
 
     const isConnected = metrics.kafkaEvents > 0 || metrics.locksAcquired > 0;
 
+    // Append a bounded (last-10) log entry whenever the parent's telemetry
+    // changes. This intentionally mirrors an external event stream into local
+    // state; the set-state-in-effect rule is a perf heuristic and is safe here.
     useEffect(() => {
-        // Add a log whenever metrics change (simplified for demo)
         const newLog: MetricRecord = {
-            id: Math.random().toString(36).substr(2, 9),
+            id: Math.random().toString(36).slice(2, 11),
             type: metrics.lastActionType || 'DB',
             message: metrics.lastActionMessage || 'System Idle',
             timestamp: new Date()
         };
-
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setLogs(prev => [newLog, ...prev].slice(0, 10));
     }, [metrics]);
 

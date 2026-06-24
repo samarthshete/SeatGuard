@@ -11,6 +11,7 @@ model User {
   id        String    @id @default(uuid())
   email     String    @unique
   name      String?
+  password  String?   // bcrypt hash; nullable so pre-auth/demo rows remain valid
   bookings  Booking[]
   createdAt DateTime  @default(now())
 }

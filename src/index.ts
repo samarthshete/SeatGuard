@@ -1,13 +1,37 @@
 import './tracing';
-import Fastify, { FastifyError, FastifyInstance } from 'fastify';
+import Fastify, {
+  FastifyError,
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+} from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import jwt from '@fastify/jwt';
+import bcrypt from 'bcryptjs';
 import { Server } from 'socket.io';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
+
+// JWT secret — REQUIRED in production. In development we fall back to an
+// obviously-insecure value (with a warning) so local runs work out of the box.
+const JWT_SECRET = process.env.JWT_SECRET ?? '';
+
+// Token / authenticated-user shape.
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    payload: { id: string; email: string };
+    user: { id: string; email: string };
+  }
+}
+declare module 'fastify' {
+  interface FastifyInstance {
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  }
+}
 
 // Allowed browser origins for CORS + WebSockets. Always permit local dev; add
 // the deployed frontend via FRONTEND_URL (comma-separated list supported).
@@ -23,8 +47,17 @@ const allowedOrigins = [
 let io: Server | undefined;
 
 // --- Validation -------------------------------------------------------------
+const RegisterSchema = z.object({
+  email: z.string().email().max(255),
+  password: z.string().min(8).max(128),
+  name: z.string().min(1).max(100).optional(),
+});
+const LoginSchema = z.object({
+  email: z.string().email().max(255),
+  password: z.string().min(1).max(128),
+});
+// Booking no longer trusts a client-supplied userId — it comes from the token.
 const BookingSchema = z.object({
-  userId: z.string().min(1).max(255),
   seatNumber: z.number().int().positive(),
 });
 
@@ -32,8 +65,15 @@ const BookingSchema = z.object({
 // Plugins are registered (and awaited) BEFORE routes so the rate-limiter's
 // per-route hooks attach to every route.
 async function buildApp(instance: FastifyInstance) {
-  // Global per-IP rate limit protects all mutating endpoints (booking) from
-  // abuse. /health is exempted so platform probes are never throttled.
+  if (!JWT_SECRET) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_SECRET is required in production');
+    }
+    instance.log.warn('JWT_SECRET not set — using an insecure development secret');
+  }
+
+  // Global per-IP rate limit protects all mutating endpoints from abuse.
+  // /health is exempted so platform probes are never throttled.
   await instance.register(rateLimit, {
     global: true,
     max: Number(process.env.RATE_LIMIT_MAX) || 100,
@@ -44,6 +84,17 @@ async function buildApp(instance: FastifyInstance) {
   await instance.register(cors, {
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  });
+
+  await instance.register(jwt, { secret: JWT_SECRET || 'dev-insecure-secret-change-me' });
+
+  // preHandler that rejects requests without a valid bearer token.
+  instance.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await request.jwtVerify();
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
   });
 
   // Logs the full error server-side but never leaks stack traces / internals to
@@ -65,7 +116,61 @@ async function buildApp(instance: FastifyInstance) {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
-  // --- List all seats -------------------------------------------------------
+  // --- Auth: register -------------------------------------------------------
+  instance.post('/api/auth/register', async (request, reply) => {
+    const parsed = RegisterSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid request body', details: parsed.error.flatten() });
+    }
+    const { email, password, name } = parsed.data;
+    try {
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        return reply.status(409).send({ error: 'Email already registered' });
+      }
+      const hash = await bcrypt.hash(password, 10);
+      const user = await prisma.user.create({
+        data: { email, password: hash, name: name ?? null },
+      });
+      const token = await reply.jwtSign({ id: user.id, email: user.email });
+      return reply.status(201).send({ token, user: { id: user.id, email: user.email, name: user.name } });
+    } catch (error) {
+      instance.log.error(error);
+      return reply.status(500).send({ error: 'Failed to register' });
+    }
+  });
+
+  // --- Auth: login (stricter rate limit to slow brute force) ----------------
+  instance.post(
+    '/api/auth/login',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const parsed = LoginSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Invalid request body' });
+      }
+      const { email, password } = parsed.data;
+      try {
+        const user = await prisma.user.findUnique({ where: { email } });
+        // Same generic 401 whether the email is unknown or the password is wrong.
+        if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
+          return reply.status(401).send({ error: 'Invalid credentials' });
+        }
+        const token = await reply.jwtSign({ id: user.id, email: user.email });
+        return reply.send({ token, user: { id: user.id, email: user.email, name: user.name } });
+      } catch (error) {
+        instance.log.error(error);
+        return reply.status(500).send({ error: 'Failed to log in' });
+      }
+    },
+  );
+
+  // --- Auth: current user ---------------------------------------------------
+  instance.get('/api/auth/me', { preHandler: instance.authenticate }, async (request) => {
+    return { user: request.user };
+  });
+
+  // --- List all seats (public read) -----------------------------------------
   instance.get('/api/seats', async (_request, reply) => {
     try {
       const seats = await prisma.seat.findMany({ orderBy: { number: 'asc' } });
@@ -87,29 +192,23 @@ async function buildApp(instance: FastifyInstance) {
     }
   });
 
-  // --- Safe booking (atomic, race-free) -------------------------------------
-  // Uses a conditional UPDATE so only one concurrent request can flip a seat
-  // from AVAILABLE -> BOOKED. `updateMany` returns the number of rows affected,
-  // which is the atomicity guard against double-booking.
-  instance.post('/api/book-async', async (request, reply) => {
+  // --- Safe booking (auth required, atomic, race-free) ----------------------
+  // Auth required; the booking user is taken from the verified token, never the
+  // body. The conditional UPDATE means only one concurrent request can flip a
+  // seat from AVAILABLE -> BOOKED, which guards against double-booking.
+  instance.post('/api/book-async', { preHandler: instance.authenticate }, async (request, reply) => {
     const parsed = BookingSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Invalid request body', details: parsed.error.flatten() });
     }
-    const { userId, seatNumber } = parsed.data;
+    const { seatNumber } = parsed.data;
+    const userId = request.user.id;
 
     try {
       const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
       if (!seat) {
         return reply.status(404).send({ error: 'Seat not found' });
       }
-
-      // Ensure the user exists (mock auth: userId doubles as email).
-      await prisma.user.upsert({
-        where: { email: userId },
-        update: {},
-        create: { id: userId, email: userId, name: 'Test User' },
-      });
 
       // Atomic claim: only succeeds if the seat is still AVAILABLE.
       const claim = await prisma.seat.updateMany({
@@ -133,15 +232,16 @@ async function buildApp(instance: FastifyInstance) {
     }
   });
 
-  // --- Naive booking (intentionally race-prone) -----------------------------
-  // Kept as an educational endpoint that demonstrates the double-booking race
-  // the safe endpoint above prevents. Do NOT use in production booking flows.
-  instance.post('/api/book-naive', async (request, reply) => {
+  // --- Naive booking (auth required, intentionally race-prone) --------------
+  // Educational endpoint demonstrating the double-booking race the safe endpoint
+  // prevents. Auth-gated so it isn't an open write. Do NOT use as a real flow.
+  instance.post('/api/book-naive', { preHandler: instance.authenticate }, async (request, reply) => {
     const parsed = BookingSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Invalid request body', details: parsed.error.flatten() });
     }
-    const { userId, seatNumber } = parsed.data;
+    const { seatNumber } = parsed.data;
+    const userId = request.user.id;
 
     try {
       const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
@@ -154,12 +254,6 @@ async function buildApp(instance: FastifyInstance) {
 
       // Simulated "thinking time" — the window where the race condition occurs.
       await new Promise((r) => setTimeout(r, 50));
-
-      await prisma.user.upsert({
-        where: { email: userId },
-        update: {},
-        create: { id: userId, email: userId, name: 'Test User' },
-      });
 
       await prisma.seat.update({ where: { id: seat.id }, data: { status: 'BOOKED' } });
       const booking = await prisma.booking.create({ data: { userId, seatId: seat.id } });

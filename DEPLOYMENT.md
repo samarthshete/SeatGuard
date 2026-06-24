@@ -42,9 +42,11 @@ web service.
 
 | Variable | Source / value |
 |---|---|
-| `DATABASE_URL` | Auto-wired from the Render Postgres (`fromDatabase`) |
+| `DATABASE_URL` | Postgres connection string (set manually; append `?schema=<name>` when sharing a DB) |
 | `NODE_ENV` | `production` |
-| `FRONTEND_URL` | Your Vercel URL, e.g. `https://ticket-blitz.vercel.app` (comma-separate multiple) |
+| `JWT_SECRET` | **Required** — long random string (`openssl rand -hex 32`). API refuses to boot without it in production. |
+| `FRONTEND_URL` | Your Vercel URL, e.g. `https://seatguard.vercel.app` (comma-separate multiple) |
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` | Optional rate-limit tuning (defaults 100 / `1 minute`) |
 | `PORT` | Injected automatically by Render — do not hardcode |
 
 On first boot the API runs migrations and auto-seeds **100 seats** if the table
@@ -149,12 +151,18 @@ injected by the platform).
 - [x] Container runs as non-root (`USER node`).
 - [x] First-deploy migration flow is safe: `prisma migrate deploy` applies only
       committed migrations (no schema drift / no destructive reset).
-- [ ] **Manual (blocks "production"):** replace mock auth (`userId == email`) with
-      real authentication before handling real users.
+- [x] **Real authentication** (self-hosted JWT, bcrypt-hashed passwords).
+      Register/login/me endpoints; booking is auth-gated and the user is taken
+      from the verified token (never the request body). Login is rate-limited.
+      Requires `JWT_SECRET`. *(Implemented in code; the LIVE demo still runs the
+      pre-auth build until the next redeploy.)*
+- [x] **Production dependency audit clean**: `npm audit --omit=dev` → 0
+      vulnerabilities (remaining advisories are dev-only/tooling, 19 moderate).
 - [ ] **Manual:** rotate the demo Postgres credentials in `docker-compose.yml`
       and the CI service block before any non-local use.
-- [ ] **Manual:** remaining `npm audit` advisories live in the **optional**
-      OpenTelemetry tree (disabled by default via `ENABLE_TRACING=false`, so not
-      in the runtime path). Clearing them needs a breaking major bump of
-      `@opentelemetry/sdk-node` — track separately.
+- [ ] **Manual:** the remaining 19 `npm audit` advisories are **dev-only**
+      (tooling/transitive); production deps are clean. Review periodically.
 - [ ] **Manual:** put the API behind HTTPS (Render/Vercel provide TLS by default).
+- [ ] **Manual:** redeploy so the live site picks up the auth build, then set a
+      strong `JWT_SECRET` on Render. Consider httpOnly-cookie token storage if you
+      need defense-in-depth beyond the current Authorization-header/localStorage.

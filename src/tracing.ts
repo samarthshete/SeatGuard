@@ -27,14 +27,9 @@ if (process.env.ENABLE_TRACING === 'true') {
       [ATTR_SERVICE_VERSION]: '1.0.0',
     }),
     traceExporter,
-    instrumentations: [
-      getNodeAutoInstrumentations({
-        '@opentelemetry/instrumentation-fastify': { enabled: true },
-        '@opentelemetry/instrumentation-ioredis': { enabled: true },
-        '@opentelemetry/instrumentation-kafkajs': { enabled: true },
-        // Prisma instrumentation is handled natively by Prisma if configured.
-      }),
-    ],
+    // Default auto-instrumentations cover HTTP, Fastify, ioredis, kafkajs, etc.
+    // Prisma instrumentation is handled natively by Prisma if configured.
+    instrumentations: [getNodeAutoInstrumentations()],
   });
 
   sdk.start();

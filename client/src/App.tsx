@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import Visualizer from './components/Visualizer';
+import AuthPanel, { type AuthUser } from './components/AuthPanel';
 import './App.css';
 
 // Connect to API Server
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const socket = io(API_URL);
+
+const TOKEN_KEY = 'sg_token';
+const USER_KEY = 'sg_user';
 
 type SeatStatus = 'AVAILABLE' | 'BOOKED' | 'LOCKED' | 'PENDING';
 
@@ -18,6 +22,26 @@ function App() {
   const [seats, setSeats] = useState<Seat[]>(
     Array.from({ length: 100 }, (_, i) => ({ id: i + 1, status: 'AVAILABLE' }))
   );
+
+  // Auth state (persisted in localStorage)
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as AuthUser) : null;
+  });
+
+  const handleAuth = (newToken: string, newUser: AuthUser) => {
+    localStorage.setItem(TOKEN_KEY, newToken);
+    localStorage.setItem(USER_KEY, JSON.stringify(newUser));
+    setToken(newToken);
+    setUser(newUser);
+  };
+  const handleLogout = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    setToken(null);
+    setUser(null);
+  };
 
   // Track "optimistic" booking attempts to show spinner/yellow state
   const [pendingSeats, setPendingSeats] = useState<Set<number>>(new Set());
@@ -37,9 +61,9 @@ function App() {
       try {
         const res = await fetch(`${API_URL}/api/seats`);
         if (!res.ok) throw new Error('Failed to fetch seats');
-        const data = await res.json();
+        const data: Array<{ number: number; status: string }> = await res.json();
         // Map DB "number" to Frontend "id"
-        const mappedSeats: Seat[] = data.map((s: any) => ({
+        const mappedSeats: Seat[] = data.map((s) => ({
           id: s.number,
           status: s.status as SeatStatus
         }));
@@ -91,6 +115,16 @@ function App() {
   const handleSeatClick = async (seat: Seat) => {
     if (seat.status !== 'AVAILABLE') return;
 
+    // Booking requires authentication.
+    if (!token) {
+      setTelemetry(prev => ({
+        ...prev,
+        lastActionType: 'DB',
+        lastActionMessage: 'Please log in to book a seat'
+      }));
+      return;
+    }
+
     // 1. Optimistic UI Update (Yellow/Pending)
     setPendingSeats(prev => new Set(prev).add(seat.id));
     setSeats(prev => prev.map(s =>
@@ -99,7 +133,7 @@ function App() {
 
     try {
       // 2. Fire and Forget (Async Architecture)
-      // We don't wait for the booking confirmation here. 
+      // We don't wait for the booking confirmation here.
       // We wait for the Websocket event to turn it Red.
       setTelemetry(prev => ({
         ...prev,
@@ -110,12 +144,25 @@ function App() {
 
       const res = await fetch(`${API_URL}/api/book-async`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: `demo_user_${Math.floor(Math.random() * 1000)}`,
-          seatNumber: seat.id
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ seatNumber: seat.id })
       });
+
+      if (res.status === 401) {
+        // Token expired/invalid — force re-login and revert the seat.
+        handleLogout();
+        setSeats(prev => prev.map(s => (s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s)));
+        setPendingSeats(prev => {
+          const n = new Set(prev);
+          n.delete(seat.id);
+          return n;
+        });
+        setTelemetry(prev => ({ ...prev, lastActionMessage: 'Session expired — please log in again' }));
+        return;
+      }
 
       if (res.status === 409) {
         // Seat was actually already booked (race condition or stale state)
@@ -161,6 +208,13 @@ function App() {
   return (
     <div className="container">
       <h1>TicketBlitz Live ⚡</h1>
+
+      <AuthPanel apiUrl={API_URL} user={user} onAuth={handleAuth} onLogout={handleLogout} />
+      {!user && (
+        <p style={{ color: '#888', fontSize: '0.8rem', marginTop: '-0.5rem' }}>
+          Log in or create an account to book seats.
+        </p>
+      )}
 
       <div className="metrics">
         <div className="card">

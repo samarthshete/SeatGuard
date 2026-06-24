@@ -78,7 +78,7 @@ export const runWorker = async () => {
     console.log("Worker Listening...");
 
     await consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
+        eachMessage: async ({ message }) => {
             if (!message.value) return;
             const payload = JSON.parse(message.value.toString());
             await processBooking(payload.userId, payload.seatNumber);

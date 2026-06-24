@@ -84,7 +84,7 @@ function App() {
     const bookedCount = seats.filter(s => s.status === 'BOOKED').length;
     setMetrics({
       booked: bookedCount,
-      available: 100 - bookedCount
+      available: seats.length - bookedCount
     });
   }, [seats]);
 

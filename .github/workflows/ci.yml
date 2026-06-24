@@ -45,11 +45,14 @@ jobs:
       run: npx prisma generate
       
     - name: Lint (ESLint)
-      run: npx eslint src tests --ext .ts
+      run: npm run lint
       
     - name: Type Check (tsc)
       run: npx tsc --noEmit
-      
+
+    - name: Build (compile API)
+      run: npm run build
+
     - name: Run Jest Unit and Integration Tests
       env:
         DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"

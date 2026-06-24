@@ -1,5 +1,4 @@
 import { DistributedLock } from '../src/lib/redis-lock';
-import Redis from 'ioredis';
 
 let mockStore: Record<string, string> = {};
 

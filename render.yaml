@@ -1,31 +1,23 @@
 services:
-  # TicketBlitz Unified Service (API + Worker)
+  # TicketBlitz API (Fastify + Prisma + Socket.io)
+  # The API uses only PostgreSQL. Redis/Kafka are required only by the optional
+  # worker (src/worker.ts), which is not part of this single-service deploy.
   - type: web
     name: ticket-blitz-api
     runtime: node
     plan: free
     buildCommand: npm install && npm run build
     startCommand: npm run start:api
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
-      - key: SINGLE_PROCESS
-        value: "true"
       - key: DATABASE_URL
         fromDatabase:
           name: ticket-blitz-db
           property: connectionString
-      - key: REDIS_HOST
-        sync: false
-      - key: REDIS_PORT
-        value: 6379
-      - key: KAFKA_BROKERS
-        sync: false
-      - key: KAFKA_USERNAME
-        sync: false
-      - key: KAFKA_PASSWORD
+      # Set this in the Render dashboard to your deployed frontend URL.
+      - key: FRONTEND_URL
         sync: false
 
 databases:

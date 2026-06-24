@@ -1,0 +1,15 @@
+node_modules
+client
+dist
+build
+coverage
+.git
+.github
+.env
+.env.*
+*.log
+k8s
+assets
+README.md
+docker-compose.yml
+load-test.js

@@ -10,7 +10,12 @@
 [![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)](https://reactjs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
-> **Production-grade ticket booking platform handling high concurrency with zero race conditions, featuring real-time engineering visualization**
+> **High-concurrency ticket booking demo with zero race conditions and real-time visualization**
+
+> ⚠️ **PUBLIC DEMO / STAGING — NOT PRODUCTION.** This app uses **mock auth**
+> (`userId` == email; anyone can book as anyone). It is fine as a public demo but
+> is **not safe for real users, payments, or PII** until real authentication is
+> added. See [DEPLOYMENT.md](DEPLOYMENT.md) for the full security checklist.
 
 [🚀 Live Demo](#) | [📊 API Docs](#) | [🎥 System Demo](#) | [💼 Portfolio](https://abhics8.github.io/Portfolio)
 
@@ -321,73 +326,87 @@ Kafka Lag:            <100ms
 
 ## 🚀 Quick Start
 
+> **Repository layout:** the API (Fastify + Prisma + Socket.io) lives at the
+> repo root (`src/`). The React/Vite frontend lives in `client/`. The optional
+> Kafka worker (`src/worker.ts`) requires Redis + Kafka; the API itself needs
+> only PostgreSQL.
+
 ### **Prerequisites**
 
 ```bash
-Node.js 20+ LTS
-Docker & Docker Compose
-PostgreSQL 15+
-Redis 7+
-Kafka 3.5+ (or use Docker Compose)
+Node.js 20+ (22 recommended)
+PostgreSQL 15+            # required by the API
+Docker & Docker Compose  # optional — easiest way to run Postgres locally
+Redis 7+ / Kafka 3.5+    # optional — only for the worker (src/worker.ts)
 ```
 
 ### **Local Development Setup**
 
 ```bash
-# Clone repository
+# 1. Clone
 git clone https://github.com/Abhics8/Ticket-Blitz.git
 cd Ticket-Blitz
 
-# Install dependencies
+# 2. Install API dependencies (runs `prisma generate` via postinstall)
 npm install
 
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
+# 3. Configure environment
+cp .env.example .env          # then set DATABASE_URL (and FRONTEND_URL)
 
-# Start infrastructure (Postgres, Redis, Kafka)
-docker-compose up -d
+# 4. Start infrastructure (Postgres, Redis, Redpanda/Kafka)
+docker-compose up -d          # or point DATABASE_URL at any Postgres
 
-# Run database migrations
-npm run db:migrate
+# 5. Apply database migrations
+npx prisma migrate deploy     # use `npx prisma migrate dev` while iterating
 
-# Seed database with sample events
+# 6. (Optional) Seed 10,000 demo seats — the API also auto-seeds 100 on first
+#    boot if the seats table is empty, so this step is not required.
 npm run db:seed
 
-# Start backend server
-cd backend
-npm run dev
-# Server running at http://localhost:3000
+# 7. Run the API (http://localhost:3000)
+npm run dev:api
 
-# Start frontend (new terminal)
-cd frontend
+# 8. Run the frontend in a second terminal (http://localhost:5173)
+cd client
+npm install
+echo 'VITE_API_URL="http://localhost:3000"' > .env   # optional; this is the default
 npm run dev
-# Frontend running at http://localhost:5173
+```
 
-# Start WebSocket server (new terminal)
-cd backend
-npm run ws:server
-# WebSocket running at ws://localhost:8080
+### **Quality gates**
+
+```bash
+npm run lint        # ESLint (flat config)
+npm run typecheck   # tsc --noEmit
+npm test            # Jest unit tests
+npm run build       # compile API -> dist/
 ```
 
 ### **Production Deployment**
 
+**Recommended:** API on **Render** (`render.yaml` included), frontend on **Vercel**.
+
 ```bash
-# Build frontend
-cd frontend
-npm run build
+# --- Backend (Render) ---
+# Render reads render.yaml: it provisions Postgres, runs
+#   build:  npm install && npm run build
+#   start:  npm run start:api   (== prisma migrate deploy && node dist/index.js)
+# Set FRONTEND_URL in the Render dashboard to your Vercel URL.
 
-# Build backend
-cd backend
-npm run build
+# --- Frontend (Vercel) ---
+# Set Root Directory = client
+#   build command:    npm run build
+#   output directory: dist
+#   env var:          VITE_API_URL = https://<your-render-api>.onrender.com
 
-# Deploy with Docker
-docker-compose -f docker-compose.prod.yml up -d
-
-# Or deploy to cloud
-# Frontend: Vercel (auto-deploy from main branch)
-# Backend: Render (Dockerfile deployment)
+# --- Container / Kubernetes (optional) ---
+docker build -t ticket-blitz-api .          # API image (Dockerfile at root)
+docker build -t ticket-blitz-worker .       # worker: override CMD to start:worker
+kubectl apply -f k8s/
 ```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide, required
+environment variables, and the production security checklist.
 
 ---
 

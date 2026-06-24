@@ -12,10 +12,13 @@
 
 > **High-concurrency ticket booking demo with zero race conditions and real-time visualization**
 
-> ⚠️ **PUBLIC DEMO / STAGING — NOT PRODUCTION.** This app uses **mock auth**
-> (`userId` == email; anyone can book as anyone). It is fine as a public demo but
-> is **not safe for real users, payments, or PII** until real authentication is
-> added. See [DEPLOYMENT.md](DEPLOYMENT.md) for the full security checklist.
+> ⚠️ **PUBLIC DEMO / STAGING — NOT PRODUCTION.** The **live** demo runs a build
+> with **mock auth** (anyone can book as anyone). Real JWT auth is built and
+> tested on the `production-deploy-prep` branch but not yet deployed.
+>
+> 📍 **Current state, live URLs, and exactly what to do next:**
+> see **[PROJECT_STATUS.md](PROJECT_STATUS.md)**. Full deploy guide + security
+> checklist: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 [🚀 Live Demo](#) | [📊 API Docs](#) | [🎥 System Demo](#) | [💼 Portfolio](https://abhics8.github.io/Portfolio)
 

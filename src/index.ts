@@ -20,7 +20,7 @@ import {
 } from './metrics';
 
 const app = Fastify({ logger: true });
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
 
 // JWT secret — REQUIRED in production. In development we fall back to an
 // obviously-insecure value (with a warning) so local runs work out of the box.
@@ -70,7 +70,7 @@ const BookingSchema = z.object({
 // --- App wiring -------------------------------------------------------------
 // Plugins are registered (and awaited) BEFORE routes so the rate-limiter's
 // per-route hooks attach to every route.
-async function buildApp(instance: FastifyInstance) {
+export async function buildApp(instance: FastifyInstance) {
   if (!JWT_SECRET) {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('JWT_SECRET is required in production');
@@ -369,7 +369,12 @@ const shutdown = async (signal: string) => {
   }
 };
 
-process.on('SIGINT', () => void shutdown('SIGINT'));
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-
-main();
+// Only start the HTTP server when run directly (e.g. `node dist/index.js` or
+// `ts-node src/index.ts`). When imported by a test, the routes are mounted via
+// the exported `buildApp` onto a throwaway instance instead — no server, no
+// signal handlers, no port binding.
+if (require.main === module) {
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  main();
+}

@@ -49,26 +49,68 @@ jobs:
     - name: Build (compile API)
       run: npm run build
 
+    - name: Apply migrations (so integration tests have tables)
+      env:
+        DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"
+      run: npx prisma migrate deploy
+
     - name: Run Jest Unit and Integration Tests
       env:
         DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"
       run: npx jest --coverage
-      
+
     - name: Dry Run Docker Build (API)
       run: docker build -t ticket-blitz-api:test -f Dockerfile .
 
-  load-test:
+  # Real correctness gate: boot the API and fire N concurrent bookings at one
+  # seat. The build FAILS if more than one booking succeeds (an oversell).
+  concurrency-gate:
     needs: build-and-test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: ticketblitz
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - uses: actions/checkout@v4
-    
-    # In a real workflow, you would spin up docker-compose and run k6
-    # Here we mock the k6 verification logic to ensure the load test config is sound
-    - name: Verify Load Test Configuration
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    - run: npm ci
+    - run: npx prisma generate
+    - name: Apply migrations
+      env:
+        DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"
+      run: npx prisma migrate deploy
+    - run: npm run build
+
+    - name: Oversell gate (1 success / N-1 conflicts, oversell = 0)
+      env:
+        DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"
+        JWT_SECRET: ci-correctness-secret
+        PORT: "3000"
+        NODE_ENV: development
+        BASE_URL: http://localhost:3000
+        CONCURRENCY: "30"
       run: |
-        if [ ! -f "load-test.js" ]; then
-          echo "k6 load-test.js script not found!"
-          exit 1
-        fi
-        echo "✅ Load test script present. Will execute k6 run load-test.js in CD pipeline."
+        node dist/index.js & SERVER_PID=$!
+        for i in $(seq 1 30); do
+          curl -sf http://localhost:3000/health >/dev/null && break || sleep 1
+        done
+        node scripts/concurrency-check.mjs
+        STATUS=$?
+        kill $SERVER_PID 2>/dev/null || true
+        exit $STATUS

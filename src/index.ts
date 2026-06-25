@@ -16,7 +16,11 @@ import {
   registry,
   httpRequestDuration,
   recordBooking,
+  recordHold,
+  recordHoldConfirmed,
+  recordHoldExpired,
   getBookingCounts,
+  getHoldCounts,
 } from './metrics';
 
 const app = Fastify({ logger: true });
@@ -66,6 +70,17 @@ const LoginSchema = z.object({
 const BookingSchema = z.object({
   seatNumber: z.number().int().positive(),
 });
+const HoldSchema = z.object({
+  seatNumber: z.number().int().positive(),
+});
+const ConfirmSchema = z.object({
+  idempotencyKey: z.string().min(1).max(200),
+});
+
+// How long a hold lives before the reaper releases it, and how often the reaper
+// sweeps. Both configurable via env.
+const HOLD_TTL_SECONDS = Number(process.env.HOLD_TTL_SECONDS) || 120;
+const HOLD_REAP_INTERVAL_MS = Number(process.env.HOLD_REAP_INTERVAL_MS) || 5000;
 
 // --- App wiring -------------------------------------------------------------
 // Plugins are registered (and awaited) BEFORE routes so the rate-limiter's
@@ -147,14 +162,17 @@ export async function buildApp(instance: FastifyInstance) {
   // metrics module. Nothing here is fabricated client-side.
   instance.get('/api/stats', async (_request, reply) => {
     try {
-      const [total, booked] = await Promise.all([
+      const [total, booked, held] = await Promise.all([
         prisma.seat.count(),
         prisma.seat.count({ where: { status: 'BOOKED' } }),
+        prisma.seat.count({ where: { status: 'HELD' } }),
       ]);
       const { bookings, conflicts } = getBookingCounts();
+      const holds = getHoldCounts();
       return {
-        seats: { total, booked, available: total - booked },
+        seats: { total, booked, held, available: total - booked - held },
         bookings: { total: bookings, conflicts },
+        holds,
       };
     } catch (error) {
       instance.log.error(error);
@@ -280,6 +298,116 @@ export async function buildApp(instance: FastifyInstance) {
     }
   });
 
+  // --- Place a hold (auth required, atomic) ---------------------------------
+  // Reserves a seat for HOLD_TTL_SECONDS. Uses the same atomic conditional
+  // UPDATE as booking: only one concurrent request can move AVAILABLE -> HELD.
+  // If the caller already holds the seat, the TTL is refreshed instead of 409.
+  instance.post('/api/holds', { preHandler: instance.authenticate }, async (request, reply) => {
+    const parsed = HoldSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid request body', details: parsed.error.flatten() });
+    }
+    const { seatNumber } = parsed.data;
+    const userId = request.user.id;
+    const heldUntil = new Date(Date.now() + HOLD_TTL_SECONDS * 1000);
+
+    try {
+      const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
+      if (!seat) {
+        return reply.status(404).send({ error: 'Seat not found' });
+      }
+
+      // Atomic claim: AVAILABLE -> HELD.
+      const claim = await prisma.seat.updateMany({
+        where: { id: seat.id, status: 'AVAILABLE' },
+        data: { status: 'HELD', heldBy: userId, heldUntil },
+      });
+
+      if (claim.count === 0) {
+        // Allow the existing holder to refresh their own (unexpired) hold.
+        const refresh = await prisma.seat.updateMany({
+          where: { id: seat.id, status: 'HELD', heldBy: userId, heldUntil: { gt: new Date() } },
+          data: { heldUntil },
+        });
+        if (refresh.count === 0) {
+          return reply.status(409).send({ error: 'Seat not available' });
+        }
+      } else {
+        recordHold();
+      }
+
+      io?.emit('seat-update', { seatNumber, status: 'HELD', heldBy: userId });
+      return reply.status(200).send({ seatNumber, status: 'HELD', heldUntil: heldUntil.toISOString() });
+    } catch (error) {
+      instance.log.error(error);
+      return reply.status(500).send({ error: 'Failed to place hold' });
+    }
+  });
+
+  // --- Confirm a hold into a booking (auth required, idempotent) ------------
+  // The idempotencyKey makes a retried confirm safe: the same key always maps to
+  // the same single booking, never a duplicate.
+  instance.post(
+    '/api/holds/:seatNumber/confirm',
+    { preHandler: instance.authenticate },
+    async (request, reply) => {
+      const seatNumber = Number((request.params as { seatNumber: string }).seatNumber);
+      if (!Number.isInteger(seatNumber) || seatNumber <= 0) {
+        return reply.status(400).send({ error: 'Invalid seat number' });
+      }
+      const parsed = ConfirmSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Invalid request body', details: parsed.error.flatten() });
+      }
+      const { idempotencyKey } = parsed.data;
+      const userId = request.user.id;
+
+      try {
+        // Idempotency: a confirm already processed with this key returns the
+        // same booking instead of creating another.
+        const existing = await prisma.booking.findUnique({ where: { idempotencyKey } });
+        if (existing) {
+          return reply.status(200).send({ success: true, status: 'Booked', bookingId: existing.id, idempotent: true });
+        }
+
+        const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
+        if (!seat) {
+          return reply.status(404).send({ error: 'Seat not found' });
+        }
+
+        // Atomic confirm: only the holder, and only before expiry.
+        const claim = await prisma.seat.updateMany({
+          where: { id: seat.id, status: 'HELD', heldBy: userId, heldUntil: { gt: new Date() } },
+          data: { status: 'BOOKED', heldBy: null, heldUntil: null },
+        });
+
+        if (claim.count === 0) {
+          return reply.status(409).send({ error: 'Hold expired or not held by you' });
+        }
+
+        let booking;
+        try {
+          booking = await prisma.booking.create({ data: { userId, seatId: seat.id, idempotencyKey } });
+        } catch (e) {
+          // Unique-key race: another request with the same key won — return it.
+          const dup = await prisma.booking.findUnique({ where: { idempotencyKey } });
+          if (dup) {
+            return reply.status(200).send({ success: true, status: 'Booked', bookingId: dup.id, idempotent: true });
+          }
+          throw e;
+        }
+
+        recordHoldConfirmed();
+        recordBooking('success');
+        io?.emit('seat-update', { seatNumber, status: 'BOOKED' });
+        return reply.status(200).send({ success: true, status: 'Booked', bookingId: booking.id });
+      } catch (error) {
+        instance.log.error(error);
+        return reply.status(500).send({ error: 'Failed to confirm hold' });
+      }
+    },
+  );
+
   // --- Naive booking (auth required, intentionally race-prone) --------------
   // Educational endpoint demonstrating the double-booking race the safe endpoint
   // prevents. Auth-gated so it isn't an open write. Do NOT use as a real flow.
@@ -336,6 +464,41 @@ async function ensureSeedData() {
   app.log.info(`Seeded 100 seats for event ${event.id}`);
 }
 
+// --- Hold reaper ------------------------------------------------------------
+// Releases holds whose TTL has passed (HELD -> AVAILABLE). Pure and exported so
+// it can be unit-tested directly without spinning up a timer. Returns the seat
+// numbers that were released.
+export async function releaseExpiredHolds(): Promise<number[]> {
+  const expired = await prisma.seat.findMany({
+    where: { status: 'HELD', heldUntil: { lt: new Date() } },
+    select: { id: true, number: true },
+  });
+  if (expired.length === 0) return [];
+
+  await prisma.seat.updateMany({
+    where: { id: { in: expired.map((s) => s.id) } },
+    data: { status: 'AVAILABLE', heldBy: null, heldUntil: null },
+  });
+  recordHoldExpired(expired.length);
+  return expired.map((s) => s.number);
+}
+
+// Periodically sweep expired holds and broadcast each release. The interval is
+// unref()'d so it never keeps the process (or a test runner) alive.
+function startReaper() {
+  const timer = setInterval(() => {
+    releaseExpiredHolds()
+      .then((released) => {
+        for (const seatNumber of released) {
+          io?.emit('seat-update', { seatNumber, status: 'AVAILABLE' });
+        }
+      })
+      .catch((err) => app.log.error(err));
+  }, HOLD_REAP_INTERVAL_MS);
+  timer.unref();
+  return timer;
+}
+
 // --- Startup / shutdown -----------------------------------------------------
 const main = async () => {
   const port = Number(process.env.PORT) || 3000;
@@ -350,6 +513,9 @@ const main = async () => {
     io.on('connection', (socket) => {
       app.log.info(`Client connected: ${socket.id}`);
     });
+
+    // Begin releasing expired holds in the background.
+    startReaper();
   } catch (err) {
     app.log.error(err);
     process.exit(1);

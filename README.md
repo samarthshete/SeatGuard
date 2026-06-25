@@ -57,13 +57,17 @@ demonstrate the bug the safe path avoids.
 
 - **Race-free booking under contention** — `prisma.seat.updateMany({ where: { status: 'AVAILABLE' } })`
   guarantees exactly one winner. Proven by `scripts/concurrency-check.mjs` and the k6 `oversell` gate.
+- **Seat holds + idempotency** — a reserve→confirm→expire flow: `POST /api/holds` puts a seat `HELD`
+  for a TTL, `POST /api/holds/:n/confirm` finalizes it with an **idempotency key** (a retried confirm
+  returns the same booking, never a duplicate), and a background **reaper** releases expired holds. Same
+  atomic-`UPDATE` concurrency control as instant booking.
 - **Real authentication** — self-hosted JWT (`@fastify/jwt`) + bcrypt-hashed passwords; booking is
   auth-gated; login is rate-limited.
 - **Input validation** — every mutating endpoint validates its body with Zod (400 on bad input).
 - **Real-time updates** — Socket.io broadcasts seat changes to all connected clients.
 - **Real metrics (not fabricated)** — `GET /metrics` (Prometheus via `prom-client`) exposes
-  `bookings_total`, `booking_conflicts_total`, and request-latency histograms; `GET /api/stats` returns
-  real seat/booking counts that drive the UI dashboard.
+  `bookings_total`, `booking_conflicts_total`, `holds_total`/`holds_confirmed_total`/`holds_expired_total`,
+  and request-latency histograms; `GET /api/stats` returns real seat/booking/hold counts that drive the UI.
 - **Operational hygiene** — `/health` probe, per-IP rate limiting, sanitized 5xx errors, graceful
   shutdown, non-root container, opt-in OpenTelemetry tracing.
 
@@ -101,7 +105,9 @@ demonstrate the bug the safe path avoids.
 | `POST` | `/api/auth/register` | — | Create account → returns JWT |
 | `POST` | `/api/auth/login` | — | Log in → returns JWT (rate-limited) |
 | `GET` | `/api/auth/me` | ✅ | Current user from token |
-| `POST` | `/api/book-async` | ✅ | **Race-free** booking (atomic conditional UPDATE) |
+| `POST` | `/api/book-async` | ✅ | **Race-free** instant booking (atomic conditional UPDATE) |
+| `POST` | `/api/holds` | ✅ | Place a TTL hold on a seat (AVAILABLE → HELD) |
+| `POST` | `/api/holds/:n/confirm` | ✅ | Confirm a hold → BOOKED (idempotency key) |
 | `POST` | `/api/book-naive` | ✅ | Intentionally race-prone (educational contrast) |
 
 ---
@@ -196,7 +202,7 @@ Ticket-Blitz/
 
 ## 🎯 Honest limitations / future work
 
-- **Demo/staging, not production** — single event, no payments, no seat *holds* (booking is immediate).
+- **Demo/staging, not production** — single event, no payments (holds + confirm exist, but no real checkout).
 - **Single API instance** for real-time — multi-instance Socket.io would need a shared adapter.
 - **Live-path test coverage** is still being built out (current tests cover unit logic, not the HTTP handlers).
 - Roadmap and trade-off analysis live in [`docs/`](docs/) (`ROADMAP.md`, `DECISIONS.md`, `V2_ARCHITECTURE_PROPOSAL.md`).

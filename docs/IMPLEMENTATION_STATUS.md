@@ -8,6 +8,7 @@ Brutally honest, evidence-based. "Live build" = what's deployed now (pre-auth). 
 | Feature | Evidence | Notes |
 |---|---|---|
 | Atomic race-free booking | `src/index.ts` `prisma.seat.updateMany({where:{status:'AVAILABLE'}})` | Verified: 1 winner / N-1 conflicts under concurrency |
+| Seat holds + idempotency | `POST /api/holds`, `POST /api/holds/:n/confirm`, `releaseExpiredHolds` reaper | reserve→confirm→expire; idempotency key dedups confirms; integration-tested |
 | Real-time seat updates | `io.emit('seat-update')` + `client/src/App.tsx` socket listener | Verified live |
 | JWT auth (register/login/me) | `src/index.ts`, `client/src/components/AuthPanel.tsx` | **Branch build only**, verified locally |
 | Auth-gated booking, userId from token | `book-async` preHandler `authenticate` | Closes "book as anyone" |
@@ -46,7 +47,7 @@ Brutally honest, evidence-based. "Live build" = what's deployed now (pre-auth). 
 
 ## Missing core features (for a real product)
 - Event management (create/list events; seats per event). Only `prisma/seed.ts` creates events.
-- Seat holds with expiry (reserve → confirm) and payments. **Not found.**
+- ~~Seat holds with expiry (reserve → confirm)~~ **DONE** (`/api/holds` + confirm + reaper). **Payments** still **not found.**
 - Per-user "my bookings" view / booking history endpoint. **Not found.**
 - Admin/organizer role + authorization beyond "logged in". **Not found.**
 - Password reset / email verification. **Not found.**

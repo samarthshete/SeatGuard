@@ -33,7 +33,7 @@ Phase-by-phase build plan. Priorities: **P0** (do first / blocking) → **P3** (
 | Task | Priority | Files | DoD | Risk |
 |---|---|---|---|---|
 | Multi-event support (event-scoped seats) | P1 | `src/index.ts` (`/api/seats?eventId`, book by `eventId+number`), `client/src/App.tsx` | Two events bookable independently | Med |
-| Seat holds with expiry (reserve → confirm) | P1 | `src/index.ts`, schema (`heldUntil`, `heldBy`) | Held seat blocks others until TTL; expiry releases it | High (concurrency) |
+| ~~Seat holds with expiry (reserve → confirm)~~ ✅ DONE | P1 | `src/index.ts`, schema (`heldUntil`, `heldBy`), `Booking.idempotencyKey` | Held seat blocks others until TTL; reaper releases it; idempotent confirm; integration-tested | — |
 | Replace fake telemetry with real `/metrics` or remove it | P1 | `Visualizer.tsx`, new metrics route | UI shows real data or panel removed | Low |
 | `Seat.status` → enum; drop/justify `Seat.version` | P2 | `prisma/schema.prisma` + migration | Type-safe status | Low |
 | Password reset + email verification | P2 | `src/index.ts`, email provider | Flows work end-to-end | Med |

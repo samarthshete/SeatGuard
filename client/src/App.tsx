@@ -11,11 +11,22 @@ const socket = io(API_URL);
 const TOKEN_KEY = 'sg_token';
 const USER_KEY = 'sg_user';
 
-type SeatStatus = 'AVAILABLE' | 'BOOKED' | 'LOCKED' | 'PENDING';
+type SeatStatus = 'AVAILABLE' | 'BOOKED' | 'HELD' | 'PENDING';
 
 interface Seat {
-  id: number;
+  id: number; // == DB seat "number"
   status: SeatStatus;
+}
+
+interface MyHold {
+  seatNumber: number;
+  heldUntil: number; // epoch ms
+}
+
+function newIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function App() {
@@ -41,16 +52,18 @@ function App() {
     localStorage.removeItem(USER_KEY);
     setToken(null);
     setUser(null);
+    setMyHold(null);
   };
-
-  // Track "optimistic" booking attempts to show spinner/yellow state
-  const [pendingSeats, setPendingSeats] = useState<Set<number>>(new Set());
 
   const [metrics, setMetrics] = useState({ booked: 0, available: 100 });
 
-  // Real stats from the API's GET /api/stats endpoint (server-computed, not
-  // fabricated client-side) plus the latest human-readable event message.
-  const [stats, setStats] = useState({ booked: 0, available: 100, conflicts: 0 });
+  // The current user's active hold (single hold at a time in this demo).
+  const [myHold, setMyHold] = useState<MyHold | null>(null);
+  // Ticks once a second so the countdown re-renders.
+  const [now, setNow] = useState(Date.now());
+
+  // Real stats from GET /api/stats (server-computed).
+  const [stats, setStats] = useState({ booked: 0, held: 0, available: 100, conflicts: 0 });
   const [lastMessage, setLastMessage] = useState('System Ready');
 
   const fetchStats = async () => {
@@ -58,158 +71,164 @@ function App() {
       const res = await fetch(`${API_URL}/api/stats`);
       if (!res.ok) return;
       const data: {
-        seats: { total: number; booked: number; available: number };
+        seats: { total: number; booked: number; held: number; available: number };
         bookings: { total: number; conflicts: number };
       } = await res.json();
       setStats({
         booked: data.seats.booked,
+        held: data.seats.held,
         available: data.seats.available,
         conflicts: data.bookings.conflicts,
       });
     } catch {
-      // Stats are best-effort; ignore transient failures.
+      // best-effort
     }
   };
 
   useEffect(() => {
-    // 0. Initial Data Fetch
     const fetchSeats = async () => {
       try {
         const res = await fetch(`${API_URL}/api/seats`);
         if (!res.ok) throw new Error('Failed to fetch seats');
-        const data: Array<{ number: number; status: string }> = await res.json();
-        // Map DB "number" to Frontend "id"
-        const mappedSeats: Seat[] = data.map((s) => ({
-          id: s.number,
-          status: s.status as SeatStatus
-        }));
-        setSeats(mappedSeats);
+        const data: Array<{ number: number; status: string; heldBy?: string | null; heldUntil?: string | null }> =
+          await res.json();
+        setSeats(data.map((s) => ({ id: s.number, status: s.status as SeatStatus })));
+        // Restore my own active hold (e.g. after a refresh).
+        const mine = data.find(
+          (s) => s.status === 'HELD' && s.heldBy && user && s.heldBy === user.id && s.heldUntil && new Date(s.heldUntil).getTime() > Date.now()
+        );
+        if (mine && mine.heldUntil) setMyHold({ seatNumber: mine.number, heldUntil: new Date(mine.heldUntil).getTime() });
         setLastMessage('System Synchronized');
       } catch (err) {
-        console.error("Failed to sync seats:", err);
+        console.error('Failed to sync seats:', err);
       }
     };
     fetchSeats();
     fetchStats();
-
-    // Refresh real stats periodically so the dashboard stays accurate.
     const statsInterval = setInterval(fetchStats, 5000);
     return () => clearInterval(statsInterval);
+  }, [user]);
+
+  // Countdown ticker.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
   }, []);
 
+  // Clear my hold once it expires locally (the reaper will broadcast AVAILABLE).
   useEffect(() => {
-    // Listen for real-time seat updates broadcast by the API.
-    const onSeatUpdate = (data: { seatNumber: number; status: SeatStatus }) => {
-      setSeats(prev => prev.map(seat => {
-        if (seat.id === data.seatNumber) {
-          // Remove from pending if it was pending
-          if (pendingSeats.has(seat.id)) {
-            const newPending = new Set(pendingSeats);
-            newPending.delete(seat.id);
-            setPendingSeats(newPending);
-          }
-          return { ...seat, status: data.status };
-        }
-        return seat;
-      }));
-      setLastMessage(`Confirmed: Seat ${data.seatNumber} booked`);
-      // Pull fresh server-side numbers for the stats panel.
+    if (myHold && myHold.heldUntil <= now) {
+      setMyHold(null);
+      setLastMessage(`Hold on seat ${myHold.seatNumber} expired`);
+    }
+  }, [now, myHold]);
+
+  useEffect(() => {
+    const onSeatUpdate = (data: { seatNumber: number; status: SeatStatus; heldBy?: string }) => {
+      setSeats((prev) =>
+        prev.map((seat) => (seat.id === data.seatNumber ? { ...seat, status: data.status } : seat))
+      );
+      // Keep my-hold state in sync with broadcasts.
+      if (data.status === 'BOOKED' || data.status === 'AVAILABLE') {
+        setMyHold((h) => (h && h.seatNumber === data.seatNumber ? null : h));
+      }
+      if (data.status === 'HELD') setLastMessage(`Seat ${data.seatNumber} held`);
+      if (data.status === 'BOOKED') setLastMessage(`Seat ${data.seatNumber} booked`);
       fetchStats();
     };
-
     socket.on('seat-update', onSeatUpdate);
     return () => {
       socket.off('seat-update', onSeatUpdate);
     };
-  }, [pendingSeats]);
+  }, []);
 
   useEffect(() => {
-    const bookedCount = seats.filter(s => s.status === 'BOOKED').length;
-    setMetrics({
-      booked: bookedCount,
-      available: seats.length - bookedCount
-    });
+    const booked = seats.filter((s) => s.status === 'BOOKED').length;
+    const held = seats.filter((s) => s.status === 'HELD').length;
+    setMetrics({ booked, available: seats.length - booked - held });
   }, [seats]);
 
-  const handleSeatClick = async (seat: Seat) => {
-    if (seat.status !== 'AVAILABLE') return;
+  const setSeatStatus = (seatNumber: number, status: SeatStatus) =>
+    setSeats((prev) => prev.map((s) => (s.id === seatNumber ? { ...s, status } : s)));
 
-    // Booking requires authentication.
+  const placeHold = async (seat: Seat) => {
     if (!token) {
       setLastMessage('Please log in to book a seat');
       return;
     }
-
-    // 1. Optimistic UI Update (Yellow/Pending)
-    setPendingSeats(prev => new Set(prev).add(seat.id));
-    setSeats(prev => prev.map(s =>
-      s.id === seat.id ? { ...s, status: 'PENDING' } : s
-    ));
-    setLastMessage(`Booking Seat ${seat.id}…`);
-
+    setSeatStatus(seat.id, 'PENDING');
+    setLastMessage(`Holding seat ${seat.id}…`);
     try {
-      const res = await fetch(`${API_URL}/api/book-async`, {
+      const res = await fetch(`${API_URL}/api/holds`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ seatNumber: seat.id })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatNumber: seat.id }),
       });
-
       if (res.status === 401) {
-        // Token expired/invalid — force re-login and revert the seat.
         handleLogout();
-        setSeats(prev => prev.map(s => (s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s)));
-        setPendingSeats(prev => {
-          const n = new Set(prev);
-          n.delete(seat.id);
-          return n;
-        });
+        setSeatStatus(seat.id, 'AVAILABLE');
         setLastMessage('Session expired — please log in again');
         return;
       }
-
-      if (res.status === 409) {
-        // Seat was actually already booked (lost the race) — correct the UI.
-        setSeats(prev => prev.map(s =>
-          s.id === seat.id ? { ...s, status: 'BOOKED' } : s
-        ));
-        setPendingSeats(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(seat.id);
-          return newSet;
-        });
-        setLastMessage(`Seat ${seat.id} already taken (409)`);
+      if (res.ok) {
+        const data: { seatNumber: number; heldUntil: string } = await res.json();
+        setSeatStatus(seat.id, 'HELD');
+        setMyHold({ seatNumber: seat.id, heldUntil: new Date(data.heldUntil).getTime() });
+        setLastMessage(`Held seat ${seat.id} — confirm before it expires`);
+      } else {
+        // 409 (someone else holds/booked it) or other — resync.
+        setSeatStatus(seat.id, 'HELD');
+        setLastMessage(`Seat ${seat.id} is no longer available`);
         fetchStats();
-      } else if (!res.ok) {
-        // Other errors (500, etc) - Revert
-        setSeats(prev => prev.map(s =>
-          s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s
-        ));
-        setPendingSeats(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(seat.id);
-          return newSet;
-        });
-        setLastMessage(`Booking failed for Seat ${seat.id}`);
       }
-
-      // If 200 OK, we wait for the socket 'seat-update' event to confirm.
-
     } catch (err) {
-      console.error("Booking request failed", err);
-      setSeats(prev => prev.map(s =>
-        s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s
-      ));
-      setPendingSeats(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(seat.id);
-        return newSet;
-      });
-      setLastMessage(`Booking request failed for Seat ${seat.id}`);
+      console.error('Hold request failed', err);
+      setSeatStatus(seat.id, 'AVAILABLE');
+      setLastMessage(`Hold request failed for seat ${seat.id}`);
     }
   };
+
+  const confirmHold = async () => {
+    if (!token || !myHold) return;
+    const seatNumber = myHold.seatNumber;
+    setLastMessage(`Confirming seat ${seatNumber}…`);
+    try {
+      const res = await fetch(`${API_URL}/api/holds/${seatNumber}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ idempotencyKey: newIdempotencyKey() }),
+      });
+      if (res.status === 401) {
+        handleLogout();
+        setLastMessage('Session expired — please log in again');
+        return;
+      }
+      if (res.ok) {
+        setSeatStatus(seatNumber, 'BOOKED');
+        setMyHold(null);
+        setLastMessage(`Booked seat ${seatNumber} ✅`);
+        fetchStats();
+      } else {
+        // 409 — hold expired before confirm.
+        setMyHold(null);
+        setLastMessage(`Hold on seat ${seatNumber} expired before confirm`);
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Confirm failed', err);
+      setLastMessage(`Confirm failed for seat ${seatNumber}`);
+    }
+  };
+
+  const handleSeatClick = (seat: Seat) => {
+    if (seat.status === 'AVAILABLE') {
+      placeHold(seat);
+    } else if (seat.status === 'HELD' && myHold?.seatNumber === seat.id) {
+      confirmHold();
+    }
+  };
+
+  const remainingSecs = myHold ? Math.max(0, Math.ceil((myHold.heldUntil - now) / 1000)) : 0;
 
   return (
     <div className="container">
@@ -218,8 +237,18 @@ function App() {
       <AuthPanel apiUrl={API_URL} user={user} onAuth={handleAuth} onLogout={handleLogout} />
       {!user && (
         <p style={{ color: '#888', fontSize: '0.8rem', marginTop: '-0.5rem' }}>
-          Log in or create an account to book seats.
+          Log in or create an account to hold and book seats.
         </p>
+      )}
+
+      {myHold && (
+        <div className="hold-banner">
+          <span className="hold-text">
+            You’re holding <strong>seat {myHold.seatNumber}</strong> —{' '}
+            <span className="countdown">{remainingSecs}s</span> left
+          </span>
+          <button onClick={confirmHold}>Confirm booking</button>
+        </div>
       )}
 
       <div className="metrics">
@@ -234,16 +263,19 @@ function App() {
       </div>
 
       <div className="grid">
-        {seats.map(seat => (
-          <div
-            key={seat.id}
-            onClick={() => handleSeatClick(seat)}
-            className={`seat ${seat.status.toLowerCase()}`}
-            title={`Seat ${seat.id}`}
-          >
-            {seat.status === 'PENDING' ? '...' : seat.id}
-          </div>
-        ))}
+        {seats.map((seat) => {
+          const mine = seat.status === 'HELD' && myHold?.seatNumber === seat.id;
+          return (
+            <div
+              key={seat.id}
+              onClick={() => handleSeatClick(seat)}
+              className={`seat ${seat.status.toLowerCase()}${mine ? ' mine' : ''}`}
+              title={`Seat ${seat.id}`}
+            >
+              {seat.status === 'PENDING' ? '...' : mine ? `${remainingSecs}s` : seat.id}
+            </div>
+          );
+        })}
       </div>
 
       <Visualizer stats={{ ...stats, lastMessage }} />

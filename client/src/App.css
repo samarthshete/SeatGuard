@@ -151,6 +151,61 @@ h1 {
   cursor: wait;
 }
 
+/* A seat held by someone else — locked. */
+.seat.held {
+  background: rgba(249, 115, 22, 0.12);
+  color: #fb923c;
+  border-color: rgba(249, 115, 22, 0.4);
+  cursor: not-allowed;
+}
+
+/* A seat the current user is holding — click to confirm. */
+.seat.held.mine {
+  background: rgba(249, 115, 22, 0.25);
+  color: #fdba74;
+  border-color: #fb923c;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(249, 115, 22, 0.4);
+  animation: pulse 1.5s infinite;
+}
+
+/* "You're holding seat N" banner with the confirm action + countdown. */
+.hold-banner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: rgba(249, 115, 22, 0.12);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.hold-banner .hold-text {
+  color: #fdba74;
+  font-size: 0.9rem;
+}
+
+.hold-banner .countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.hold-banner button {
+  background: var(--accent-green, #22c55e);
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hold-banner button:hover {
+  filter: brightness(1.1);
+}
+
 @keyframes pulse {
   0% {
     opacity: 1;

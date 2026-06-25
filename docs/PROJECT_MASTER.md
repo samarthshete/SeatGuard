@@ -82,7 +82,7 @@ See `docs/ARCHITECTURE.md` for diagrams. Summary: **monorepo-ish** with a Fastif
 PostgreSQL via Prisma (`prisma/schema.prisma`): `User`, `Event`, `Seat`, `Booking`. `Seat.status` is a free-text string (`AVAILABLE`/`BOOKED`), `Seat.version` exists but is **unused** (no optimistic locking implemented). Migrations: `20260112172212_init`, `20260624205138_add_user_password`. Full ERD in `docs/ARCHITECTURE.md`.
 
 ## API design
-REST + JSON. Endpoints: `GET /health`, `GET /metrics`, `GET /api/stats`, `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `GET /api/seats`, `GET /api/random-seat`, `POST /api/book-async`, `POST /api/book-naive`. No OpenAPI/Swagger spec (**Not found in current codebase**).
+REST + JSON. Endpoints: `GET /health`, `GET /metrics`, `GET /api/stats`, `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `GET /api/seats`, `GET /api/random-seat`, `POST /api/book-async`, `POST /api/holds`, `POST /api/holds/:seatNumber/confirm`, `POST /api/book-naive`. No OpenAPI/Swagger spec (**Not found in current codebase**).
 
 ## Auth / session flow
 Stateless JWT. Register/login return a signed token (`{ id, email }`); client sends it as `Authorization: Bearer`; `authenticate` preHandler verifies it on protected routes; `userId` is taken from the token, never the request body. No refresh tokens, no revocation, no email verification. `JWT_SECRET` required in production.

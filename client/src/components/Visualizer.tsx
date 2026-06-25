@@ -10,6 +10,7 @@ interface LogRecord {
 // fabricated client-side counters — every value is computed by the server.
 export interface LiveStats {
     booked: number;
+    held: number;
     available: number;
     conflicts: number;
     lastMessage: string;
@@ -45,6 +46,10 @@ export default function Visualizer({ stats }: { stats: LiveStats }) {
                 <div className="telemetry-card">
                     <label>Booked</label>
                     <div className="val">{stats.booked}</div>
+                </div>
+                <div className="telemetry-card">
+                    <label>Held</label>
+                    <div className="val">{stats.held}</div>
                 </div>
                 <div className="telemetry-card">
                     <label>Available</label>
@@ -106,7 +111,7 @@ export default function Visualizer({ stats }: { stats: LiveStats }) {
                 }
                 .telemetry-grid {
                     display: grid;
-                    grid-template-columns: repeat(3, 1fr);
+                    grid-template-columns: repeat(4, 1fr);
                     gap: 1rem;
                     margin: 1rem 0;
                 }

@@ -10,7 +10,7 @@ Scores are judgment calls, not measurements. Difficulty/Impact/Resume are Low/Me
 
 | # | Feature | User | Eng | Resume | Founder | Cx Risk | **Score** | Diff | Impact |
 |---|---|--:|--:|--:|--:|--:|--:|---|---|
-| F3 | **Seat holds (reserve→confirm) + TTL + idempotency** | 5 | 5 | 5 | 5 | 3 | **17** | High | High |
+| F3 | ~~**Seat holds (reserve→confirm) + TTL + idempotency**~~ ✅ DONE | 5 | 5 | 5 | 5 | 3 | **17** | High | High |
 | F7 | Payments (Stripe) on confirm, idempotent webhook | 5 | 4 | 4 | 5 | 4 | **14** | High | High |
 | F1 | **Load-test harness + defensible correctness metrics** | 2 | 4 | 5 | 4 | 2 | **13** | Low | High |
 | F6 | Multi-event support + event CRUD | 4 | 3 | 3 | 5 | 3 | **12** | Med | High |

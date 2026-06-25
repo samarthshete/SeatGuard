@@ -26,6 +26,27 @@ export const bookingConflictsTotal = new Counter({
   registers: [registry],
 });
 
+// Seat holds placed (AVAILABLE -> HELD).
+export const holdsTotal = new Counter({
+  name: 'holds_total',
+  help: 'Total seat holds placed',
+  registers: [registry],
+});
+
+// Holds confirmed into bookings (HELD -> BOOKED).
+export const holdsConfirmedTotal = new Counter({
+  name: 'holds_confirmed_total',
+  help: 'Total holds confirmed into bookings',
+  registers: [registry],
+});
+
+// Holds released by the reaper after expiry (HELD -> AVAILABLE).
+export const holdsExpiredTotal = new Counter({
+  name: 'holds_expired_total',
+  help: 'Total holds released after expiring',
+  registers: [registry],
+});
+
 // Request latency histogram, labelled so p50/p95/p99 can be derived per route.
 export const httpRequestDuration = new Histogram({
   name: 'http_request_duration_seconds',
@@ -35,9 +56,9 @@ export const httpRequestDuration = new Histogram({
   registers: [registry],
 });
 
-// Plain-number mirror of the booking counters so /api/stats can return them as
-// JSON without parsing the Prometheus text format.
-const counts = { bookings: 0, conflicts: 0 };
+// Plain-number mirror of the counters so /api/stats can return them as JSON
+// without parsing the Prometheus text format.
+const counts = { bookings: 0, conflicts: 0, holds: 0, holdsConfirmed: 0, holdsExpired: 0 };
 
 /** Record the outcome of a booking attempt (updates Prometheus + the JSON mirror). */
 export function recordBooking(outcome: 'success' | 'conflict'): void {
@@ -50,7 +71,31 @@ export function recordBooking(outcome: 'success' | 'conflict'): void {
   }
 }
 
+/** Record a hold being placed. */
+export function recordHold(): void {
+  holdsTotal.inc();
+  counts.holds += 1;
+}
+
+/** Record a hold being confirmed into a booking. */
+export function recordHoldConfirmed(): void {
+  holdsConfirmedTotal.inc();
+  counts.holdsConfirmed += 1;
+}
+
+/** Record n holds released by the reaper after expiry. */
+export function recordHoldExpired(n: number): void {
+  if (n <= 0) return;
+  holdsExpiredTotal.inc(n);
+  counts.holdsExpired += n;
+}
+
 /** Snapshot of the booking counters for the /api/stats endpoint. */
 export function getBookingCounts(): { bookings: number; conflicts: number } {
-  return { ...counts };
+  return { bookings: counts.bookings, conflicts: counts.conflicts };
+}
+
+/** Snapshot of the hold counters for the /api/stats endpoint. */
+export function getHoldCounts(): { placed: number; confirmed: number; expired: number } {
+  return { placed: counts.holds, confirmed: counts.holdsConfirmed, expired: counts.holdsExpired };
 }

@@ -64,5 +64,5 @@ Decisions inferred from the code (with likely rationale), honest critiques, and 
 4. **Multi-event:** support multiple events, or stay single-event demo (affects `seat.findFirst`).
 5. **Token storage:** keep `localStorage`, or move to httpOnly cookies (D3).
 6. ~~**README:** rewrite to match reality~~ — **RESOLVED: rewritten to match the real system.**
-7. **Payments/holds:** in scope for "real product" or out?
+7. **Payments/holds:** holds + confirm + expiry + idempotency are **DONE**; **payments** still out of scope (no real checkout).
 8. **Prisma version:** stay on 5 (delete `prisma.config.ts`) or upgrade to 6 deliberately.

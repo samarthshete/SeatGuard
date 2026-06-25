@@ -59,6 +59,17 @@ flowchart TD
 8. `io.emit('seat-update', { seatNumber, status: 'BOOKED' })`.
 9. All clients update the grid; the booking client also reconciles on the socket event.
 
+## Holds (reserve → confirm → expire)
+Alongside instant `book-async`, the UI uses a two-step hold flow (same atomic-`UPDATE` control):
+1. `POST /api/holds` → atomic `AVAILABLE → HELD` with `heldBy` + `heldUntil = now + HOLD_TTL_SECONDS`
+   (default 120s). The existing holder may refresh; everyone else gets `409`. Emits `seat-update HELD`.
+2. `POST /api/holds/:seatNumber/confirm` with an `idempotencyKey` → atomic `HELD → BOOKED` (only the
+   holder, only before expiry). The key is unique on `Booking`, so a retried confirm returns the **same**
+   booking. Emits `seat-update BOOKED`.
+3. **Reaper** (`releaseExpiredHolds` + `startReaper`, interval `HOLD_REAP_INTERVAL_MS`, `unref()`'d) returns
+   expired holds to `AVAILABLE` and broadcasts each release. Counters: `holds_total`,
+   `holds_confirmed_total`, `holds_expired_total`.
+
 ## Data flow
 - **Reads:** SPA → `GET /api/seats` → Prisma → Postgres → JSON (mapped `number → id` client-side).
 - **Writes:** SPA → `POST /api/book-async` → atomic update + insert → Socket.io broadcast → all SPAs.
@@ -104,8 +115,10 @@ erDiagram
     string id PK
     int number
     string row
-    string status "AVAILABLE|BOOKED (free text)"
+    string status "AVAILABLE|HELD|BOOKED (free text)"
     int version "UNUSED"
+    string heldBy "userId of current hold, nullable"
+    datetime heldUntil "hold expiry, nullable"
     string eventId FK
   }
   BOOKING {
@@ -113,6 +126,7 @@ erDiagram
     string userId FK
     string seatId FK "unique"
     string status "default CONFIRMED"
+    string idempotencyKey "unique, nullable"
     datetime createdAt
   }
 ```
@@ -121,7 +135,7 @@ Constraints: `Seat @@unique([eventId, number])`, `Booking.seatId @unique` (one b
 ## Important modules
 | File | Responsibility | Status |
 |---|---|---|
-| `src/index.ts` | Whole API: plugins, routes, auth, booking, `/metrics`, `/api/stats`, seed, startup/shutdown | **Active** |
+| `src/index.ts` | Whole API: plugins, routes, auth, booking, holds + confirm + reaper, `/metrics`, `/api/stats`, seed, startup/shutdown | **Active** |
 | `src/metrics.ts` | Prometheus registry + real booking counters (`bookings_total`, `booking_conflicts_total`, latency histogram) | **Active** |
 | `src/tracing.ts` | Opt-in OpenTelemetry (`ENABLE_TRACING`) | Active (off by default) |
 | `prisma/schema.prisma` | Data model | Active |

@@ -95,7 +95,7 @@ These tie directly to the strategy (`docs/FUTURE_IMPLEMENTATION_STRATEGY.md`) an
 - **Record:** _Not measured yet._
 
 ### Metrics to expose via `/metrics` (Prometheus, when F4 lands)
-`http_request_duration_seconds` (histogram), `bookings_total`, `booking_conflicts_total`, `holds_active`, **`oversell_total` (alert if >0)**. Suggested SLOs: **oversell=0**, p95<300ms, 5xx<1%.
+`http_request_duration_seconds` (histogram), `bookings_total`, `booking_conflicts_total`, `holds_total`, `holds_confirmed_total`, `holds_expired_total` (all **implemented**), plus a future **`oversell_total` (alert if >0)**. Suggested SLOs: **oversell=0**, p95<300ms, 5xx<1%.
 
 ### Test-coverage outcome to track
 After Feature 1 (`docs/IMMEDIATE_BUILD_PLAN.md`), record `jest --coverage` for `src/index.ts` (auth + booking handlers). Current live-path coverage: **0%** → target meaningful coverage of the booking/auth logic.

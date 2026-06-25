@@ -26,24 +26,27 @@ model Event {
 }
 
 model Seat {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   number    Int
   row       String
-  status    String   @default("AVAILABLE")
-  version   Int      @default(0)
+  status    String    @default("AVAILABLE")
+  version   Int       @default(0)
+  heldBy    String?   // userId of the current hold, if status == HELD
+  heldUntil DateTime? // hold expiry; the reaper releases holds past this time
   eventId   String
-  event     Event    @relation(fields: [eventId], references: [id])
+  event     Event     @relation(fields: [eventId], references: [id])
   booking   Booking?
-  
+
   @@unique([eventId, number])
 }
 
 model Booking {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  seatId    String   @unique
-  seat      Seat     @relation(fields: [seatId], references: [id])
-  status    String   @default("CONFIRMED")
-  createdAt DateTime @default(now())
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  seatId         String   @unique
+  seat           Seat     @relation(fields: [seatId], references: [id])
+  status         String   @default("CONFIRMED")
+  idempotencyKey String?  @unique // dedups retried confirms - one booking per key
+  createdAt      DateTime @default(now())
 }

@@ -11,7 +11,7 @@ process.env.RATE_LIMIT_MAX = '1000000';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'integration-test-secret';
 
 import Fastify, { FastifyInstance } from 'fastify';
-import { buildApp, prisma } from '../src/index';
+import { buildApp, prisma, releaseExpiredHolds } from '../src/index';
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -180,5 +180,115 @@ d('HTTP API (integration)', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('bookings_total');
     expect(res.body).toContain('booking_conflicts_total');
+    expect(res.body).toContain('holds_total');
+  });
+
+  // --- Seat holds (reserve -> confirm -> expire) ---------------------------
+
+  async function authToken(email: string): Promise<string> {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { email, password: 'password123' },
+    });
+    return res.json().token;
+  }
+
+  test('holding a seat succeeds (200, HELD); a second user gets 409', async () => {
+    const hold = await app.inject({
+      method: 'POST',
+      url: '/api/holds',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { seatNumber: 11 },
+    });
+    expect(hold.statusCode).toBe(200);
+    expect(hold.json().status).toBe('HELD');
+
+    const seat = await prisma.seat.findFirst({ where: { number: 11 } });
+    expect(seat!.status).toBe('HELD');
+
+    const bobToken = await authToken('bob@example.com');
+    const contested = await app.inject({
+      method: 'POST',
+      url: '/api/holds',
+      headers: { authorization: `Bearer ${bobToken}` },
+      payload: { seatNumber: 11 },
+    });
+    expect(contested.statusCode).toBe(409);
+  });
+
+  test('confirming a held seat books it; re-confirm with same key is idempotent', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/holds',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { seatNumber: 13 },
+    });
+
+    const key = 'idem-key-confirm-13';
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/holds/13/confirm',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { idempotencyKey: key },
+    });
+    expect(first.statusCode).toBe(200);
+    const bookingId = first.json().bookingId;
+
+    // Same key again → same booking, no duplicate.
+    const again = await app.inject({
+      method: 'POST',
+      url: '/api/holds/13/confirm',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { idempotencyKey: key },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().bookingId).toBe(bookingId);
+
+    const seat = await prisma.seat.findFirst({ where: { number: 13 } });
+    const count = await prisma.booking.count({ where: { seatId: seat!.id } });
+    expect(count).toBe(1);
+  });
+
+  test('confirming after the hold expires returns 409', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/holds',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { seatNumber: 14 },
+    });
+    // Force the hold into the past.
+    await prisma.seat.updateMany({
+      where: { number: 14 },
+      data: { heldUntil: new Date(Date.now() - 1000) },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/holds/14/confirm',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { idempotencyKey: 'idem-key-expired-14' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  test('releaseExpiredHolds() returns an expired hold to AVAILABLE', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/holds',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { seatNumber: 16 },
+    });
+    await prisma.seat.updateMany({
+      where: { number: 16 },
+      data: { heldUntil: new Date(Date.now() - 1000) },
+    });
+
+    const released = await releaseExpiredHolds();
+    expect(released).toContain(16);
+
+    const seat = await prisma.seat.findFirst({ where: { number: 16 } });
+    expect(seat!.status).toBe('AVAILABLE');
+    expect(seat!.heldBy).toBeNull();
   });
 });

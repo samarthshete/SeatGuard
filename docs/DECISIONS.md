@@ -57,6 +57,11 @@ Decisions inferred from the code (with likely rationale), honest critiques, and 
 - **Likely why:** avoid prod overhead/errors with no collector; keep the capability.
 - **Assessment:** ✅ Good gating. ⚠️ The dependency tree is the bulk of remaining (dev-only) audit noise.
 
+## D11 — Index the hot seat-lookup columns
+- **Visible in:** migration `add_seat_indexes` — `@@index([number])` and `@@index([status, heldUntil])`.
+- **Why:** the booking/hold hot path filters `Seat` by `number` alone, which the composite `@@unique([eventId, number])` can't serve → Seq Scan. Measured on 50k seats: `WHERE number=?` went **Seq Scan 2.64ms → Index Scan 0.037ms**; write-path load **+47% RPS, p95 −24%** (see `docs/BENCHMARKS.md`). `[status, heldUntil]` serves the `/api/stats` status counts and the expired-hold reaper.
+- **Assessment:** ✅ Clear win, no behavior change. `/api/stats` also switched from three `COUNT`s to one `groupBy`.
+
 ## Pending decisions (need a human call)
 1. **Project name:** TicketBlitz or SeatGuard — pick one, update everywhere.
 2. ~~**Kafka/Redis subsystem:** finish & wire, or delete~~ — **RESOLVED: deleted (D2).**

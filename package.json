@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "loadtest": "k6 run load-test.js",
-    "concurrency-check": "node scripts/concurrency-check.mjs"
+    "concurrency-check": "node scripts/concurrency-check.mjs",
+    "load:write": "node scripts/load-write.mjs"
   },
   "keywords": [],
   "author": "",

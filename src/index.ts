@@ -162,11 +162,12 @@ export async function buildApp(instance: FastifyInstance) {
   // metrics module. Nothing here is fabricated client-side.
   instance.get('/api/stats', async (_request, reply) => {
     try {
-      const [total, booked, held] = await Promise.all([
-        prisma.seat.count(),
-        prisma.seat.count({ where: { status: 'BOOKED' } }),
-        prisma.seat.count({ where: { status: 'HELD' } }),
-      ]);
+      // One grouped query instead of three COUNTs.
+      const byStatus = await prisma.seat.groupBy({ by: ['status'], _count: { _all: true } });
+      const counts = Object.fromEntries(byStatus.map((g) => [g.status, g._count._all]));
+      const booked = counts['BOOKED'] ?? 0;
+      const held = counts['HELD'] ?? 0;
+      const total = byStatus.reduce((sum, g) => sum + g._count._all, 0);
       const { bookings, conflicts } = getBookingCounts();
       const holds = getHoldCounts();
       return {

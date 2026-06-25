@@ -38,6 +38,8 @@ model Seat {
   booking   Booking?
 
   @@unique([eventId, number])
+  @@index([number]) // hot path: book/hold lookups filter by number alone
+  @@index([status, heldUntil]) // stats status counts + the expired-hold reaper
 }
 
 model Booking {

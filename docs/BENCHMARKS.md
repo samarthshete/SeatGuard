@@ -80,6 +80,35 @@ same local-dev environment):
 | Node fetch (read path) | 2400 | 4.1 | 24.5 | 26.9 | 0% | 2026-06-25 |
 | k6 (read path) | _Not measured yet_ | | | | | |
 
+## B2b — Write path (booking) throughput & latency + optimization
+
+`scripts/load-write.mjs` books DISTINCT seats concurrently against
+`POST /api/book-async` and reports RPS, p50/p95/p99 and 5xx:
+
+```bash
+TOTAL=4000 CONCURRENCY=50 BASE_URL=http://localhost:3000 node scripts/load-write.mjs
+```
+
+**Optimization applied (migration `add_seat_indexes`):** the hot booking/hold
+lookup `findFirst({ where: { number } })` could not use the composite
+`@@unique([eventId, number])` index, so on a 50,000-seat table it did a **Seq
+Scan**. Added `@@index([number])` (and `@@index([status, heldUntil])` for the
+stats counts + reaper), and replaced the three-`COUNT` `/api/stats` with one
+`groupBy`.
+
+Query plan for `SELECT … FROM "Seat" WHERE number = ?` on 50k rows
+(`EXPLAIN ANALYZE`): **Seq Scan 2.64 ms → Index Scan 0.037 ms (~70× faster)**.
+
+Write-load result (50k seats, 4000 distinct-seat bookings @ 50 concurrent, local-dev, 2026-06-25):
+
+| build | RPS | p50 (ms) | p95 (ms) | p99 (ms) | 5xx | date |
+|---|---|---|---|---|---|---|
+| before (Seq Scan) | 1641 | 28.5 | 43.4 | 74.0 | 0% | 2026-06-25 |
+| **after (indexed + groupBy)** | **2407** | **19.5** | **32.8** | **51.8** | 0% | 2026-06-25 |
+
+Net: **+47% throughput, p95 −24%, p99 −30%** with no error-rate change.
+> Local-dev / ephemeral Postgres figures — not a production benchmark.
+
 ---
 
 ## B3 — Live metrics

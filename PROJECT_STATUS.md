@@ -1,6 +1,6 @@
 # TicketBlitz / SeatGuard — Project Status & Next Steps
 
-_Last updated: 2026-06-24._
+_Last updated: 2026-06-25._
 _This file is the single source of truth for "where are we and what's left." Read it first next session._
 
 ---
@@ -9,8 +9,8 @@ _This file is the single source of truth for "where are we and what's left." Rea
 
 - **Live demo is up** at https://seatguard.vercel.app (frontend) + https://ticket-blitz-api-mve9.onrender.com (API).
 - The **LIVE site runs the PRE-AUTH build** (mock auth — anyone can book as anyone). Label it **public demo / staging, NOT production**.
-- **Real JWT auth is built, tested, committed, and pushed** on branch `production-deploy-prep` (commit `89c69c1`) but is **NOT deployed yet**.
-- **Next time:** redeploy the auth build (set `JWT_SECRET` on Render + redeploy API and Vercel), optionally merge to `main`, and de-risk the exposed DB password.
+- The branch `production-deploy-prep` is now **well ahead of the live site** (latest commit `3e57cfe`). On top of real JWT auth it adds: an **honesty pass** (removed unwired Kafka/Redis + rewrote the README), **real metrics** (`/metrics` + `/api/stats`), **live-path integration tests + a CI oversell gate**, **seat holds + idempotency**, and **real benchmark numbers** (`docs/BENCHMARKS.md`). None merged to `main`, **none deployed yet**.
+- **Next time:** redeploy the latest build (set `JWT_SECRET` on Render + redeploy API and Vercel), open the PR to `main` (runs CI incl. the new oversell gate + first real Docker build), and de-risk the exposed DB password.
 
 ---
 
@@ -36,10 +36,15 @@ _This file is the single source of truth for "where are we and what's left." Rea
 ## Branch state
 
 - Working branch: **`production-deploy-prep`** (pushed to `samarthshete/SeatGuard`). Not merged to `main`.
-- Commits:
+- Commits (newest last):
   - `ac94172` — deployment-prep: fix build/startup, rate limit, error handler, Dockerfile, ESLint flat config, docs.
   - `a9c5ec8` — render.yaml: external/shared Postgres + schema isolation.
-  - `89c69c1` — **real auth (JWT) + rate-limit tuning + prod npm audit clean**. ← latest, contains the auth build.
+  - `89c69c1` — real auth (JWT) + rate-limit tuning + prod npm audit clean.
+  - `05153d5` — add this PROJECT_STATUS handoff.
+  - `d2e2eae` — **honesty pass**: remove unwired Kafka/Redis, add real `/metrics` + `/api/stats`, rewrite README, fix the load test.
+  - `5079376` — record real benchmark results (`docs/BENCHMARKS.md`).
+  - `69e8648` — **live-path integration tests** + a real **CI oversell gate**.
+  - `3e57cfe` — **seat holds + idempotency** (reserve→confirm→expire + reaper). ← latest.
 
 ---
 
@@ -50,6 +55,11 @@ _This file is the single source of truth for "where are we and what's left." Rea
 - Sanitizing error handler (no stack traces in 5xx).
 - **Real authentication** (self-hosted JWT, bcrypt): `register` / `login` / `me`; booking auth-gated; `userId` from token, not body; `JWT_SECRET` required in prod (refuses to boot without it). Frontend `AuthPanel` (login/register), token in localStorage, `Authorization` header, 401 → re-login.
 - **Production `npm audit` clean (0 vulns)**; 19 remaining are dev-only. OTel bumped to patched majors; `tracing.ts` opt-in via `ENABLE_TRACING`.
+- **Honesty pass:** deleted the unwired Kafka/Redis subsystem (`worker.ts`, `lib/redis-lock.ts`, `lib/kafka-utils.ts` + deps); rewrote the README and reconciled `docs/` to match the real system.
+- **Real metrics:** `src/metrics.ts` (prom-client) → `GET /metrics`; `GET /api/stats` (real seat/booking/hold counts) drives the UI dashboard (the old fabricated "telemetry" counters are gone).
+- **Seat holds + idempotency:** `POST /api/holds` (AVAILABLE→HELD, TTL `HOLD_TTL_SECONDS`=120s), `POST /api/holds/:n/confirm` (idempotency key dedups retries), background reaper (`releaseExpiredHolds`/`startReaper`). UI: two-step hold→confirm with countdown. Migration `20260625120000_add_holds`.
+- **Tests + CI:** `tests/api.test.ts` Fastify-inject integration suite (auth, booking 200/409, holds, idempotency, expiry, reaper) — **22 tests pass against Postgres**, auto-skips without `DATABASE_URL`. CI now migrates before Jest and runs a real **oversell gate** that fails the build on any double-booking.
+- **Benchmarks (real, local-dev):** oversell=0 at 20 & 50 concurrent; read p95 ~24ms (`docs/BENCHMARKS.md`); concurrency reproducible via `npm run concurrency-check`.
 - New migration `20260624205138_add_user_password` (non-destructive; adds nullable `password`).
 - Gates green: root typecheck/lint/test/build + client lint/build.
 
@@ -57,10 +67,10 @@ _This file is the single source of truth for "where are we and what's left." Rea
 
 ## PENDING — do these next time (in order)
 
-1. **Redeploy the auth build to Render**
+1. **Redeploy the latest build to Render**
    - Render → `ticket-blitz-api` → Environment → add `JWT_SECRET` = output of `openssl rand -hex 32`.
-   - Deploy commit `89c69c1` (the branch). `prisma migrate deploy` applies the new password migration automatically.
-   - Verify: register → login → book-with-token (200) → book-without-token (401).
+   - Deploy the branch tip `3e57cfe`. `prisma migrate deploy` applies the password + `add_holds` migrations automatically.
+   - Verify: register → login → book-with-token (200) → book-without-token (401); hold a seat → confirm → BOOKED; `curl /metrics` and `/api/stats` return real counts.
 
 2. **Redeploy the frontend to Vercel** (auth UI)
    - From `client/`: `vercel --prod` (project `seatguard`). `VITE_API_URL` unchanged.

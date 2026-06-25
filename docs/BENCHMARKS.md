@@ -1,8 +1,12 @@
 # Benchmarks — how to generate real, defensible numbers
 
-> **No numbers in this repo are invented.** The tables below are intentionally
-> empty (`_Not measured yet_`) until you run the tools against a live API and a
-> dedicated database. Fill them in from your own runs and keep the date.
+> **No numbers in this repo are invented.** Tables not yet filled show
+> `_Not measured yet_`. Where numbers appear, they were produced by an actual run
+> on the environment noted next to them. Re-run on your own target to confirm.
+
+> **Environment for the 2026-06-25 run below:** local machine, ephemeral
+> PostgreSQL 16 (single instance), API on `node dist/index.js`, 100-seat seed.
+> These are **local-dev** figures — not a production or multi-instance benchmark.
 
 The headline claim worth proving is **correctness under contention**: the booking
 endpoint uses an atomic conditional `UPDATE … WHERE status='AVAILABLE'`
@@ -40,8 +44,12 @@ script exits non-zero if more than one booking succeeds.
 
 | concurrency (N) | successes (200) | conflicts (409) | oversell | date |
 |---|---|---|---|---|
-| 20 | _Not measured yet_ | | | |
-| 50 | _Not measured yet_ | | | |
+| 20 | 1 | 19 | **0** | 2026-06-25 |
+| 50 | 1 | 49 | **0** | 2026-06-25 |
+
+Server-side counters after both runs confirmed the totals — `/metrics`:
+`bookings_total 2`, `booking_conflicts_total 68` (= 19 + 49); `/api/stats`:
+`{ seats: { booked: 2, available: 98 }, bookings: { total: 2, conflicts: 68 } }`.
 
 The same correctness gate runs in k6 (`successful_bookings: count<=1`):
 
@@ -63,11 +71,14 @@ The k6 `read_load` scenario ramps `GET /api/seats` and enforces
 BASE_URL=http://localhost:3000 k6 run load-test.js
 ```
 
-Record from the k6 summary:
+Record from the k6 summary (k6 not installed in the 2026-06-25 run; the row
+below is a Node `fetch` measurement of `GET /api/seats`, 300 reqs @ 20 concurrent,
+same local-dev environment):
 
-| RPS | p50 (ms) | p95 (ms) | p99 (ms) | error rate | date |
-|---|---|---|---|---|---|
-| _Not measured yet_ | | | | | |
+| tool | RPS | p50 (ms) | p95 (ms) | p99 (ms) | error rate | date |
+|---|---|---|---|---|---|---|
+| Node fetch (read path) | 2400 | 4.1 | 24.5 | 26.9 | 0% | 2026-06-25 |
+| k6 (read path) | _Not measured yet_ | | | | | |
 
 ---
 

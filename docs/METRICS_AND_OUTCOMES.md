@@ -1,21 +1,22 @@
 # METRICS & OUTCOMES — TicketBlitz / SeatGuard
 
-**No real product/perf metrics are currently collected.** Everything below is either an observed test outcome from this engagement or a clearly-labeled "Not measured yet" with a way to measure it. **No invented numbers.**
+**Real metrics are now collected server-side** (`GET /metrics` Prometheus + `GET /api/stats`). Performance numbers are still only measured on demand (see `docs/BENCHMARKS.md`) — anything not yet run is labeled "Not measured yet". **No invented numbers.**
 
 ---
 
 ## Currently measurable from the codebase
 | Item | Value | Source |
 |---|---|---|
-| Backend LOC (`src` + `client/src`) | ~1,118 lines | `wc -l` over `*.ts`/`*.tsx` |
-| Unit tests | 13 passing (3 files) | `tests/*.ts`, `jest` |
-| Test coverage of **live** API/auth/booking | **0%** | tests only cover unused `src/lib/*` |
+| Backend LOC (`src`) / Frontend (`client/src`) | ~735 / ~598 lines | `wc -l` over `*.ts`/`*.tsx` |
+| Tests | **22 across 3 files** — 8 unit run always; 14 DB-gated integration cover live auth/booking/holds | `tests/*.ts`, `jest` |
+| Test coverage of **live** API/auth/booking/holds | **covered** by `tests/api.test.ts` (Fastify `inject` vs Postgres); auto-skips without `DATABASE_URL` | was 0% before this work |
+| Live server metrics | `/metrics`: `bookings_total`, `booking_conflicts_total`, `holds_total`, `holds_confirmed_total`, `holds_expired_total`, `http_request_duration_seconds` | `src/metrics.ts` |
 | Production `npm audit` | **0 vulnerabilities** | `npm audit --omit=dev` |
 | Total `npm audit` | 19 moderate (dev-only) | `npm audit` |
 | Quality gates | typecheck/lint/test/build all pass | local runs |
-| Concurrency correctness (verified, not monitored) | 20 parallel bookings on one seat → **1 success, 19 conflicts** (local + live) | manual E2E during this engagement |
+| Concurrency correctness (automated + CI-gated) | 20 & 50 parallel bookings on one seat → **1 success, N−1 conflicts, oversell=0** | `scripts/concurrency-check.mjs`, CI oversell gate, `docs/BENCHMARKS.md` |
 
-> The concurrency result is a **verification outcome**, not a continuously-tracked metric. To make it a defensible, repeatable claim, automate it (below).
+> The concurrency result is now a **reproducible, CI-enforced** check (not a one-off): `npm run concurrency-check` and the `concurrency-gate` CI job fail on any oversell.
 
 ## UI telemetry — fixed: now real
 The dashboard (`client/src/components/Visualizer.tsx`) previously showed fabricated
@@ -47,7 +48,7 @@ generate defensible performance numbers.
 ## Engineering metrics that SHOULD be tracked
 | Metric | Status | How |
 |---|---|---|
-| Test coverage (live paths) | 0% live | `jest --coverage` after adding API tests |
+| Test coverage (live paths) | live auth/booking/holds covered by `tests/api.test.ts`; run `jest --coverage` to quantify the % | integration suite added |
 | CI pass rate / build time | Not tracked | GitHub Actions insights |
 | Deploy frequency / lead time | Not tracked | Render/Vercel + git history |
 | MTTR, uptime | Not tracked | Uptime monitor (e.g. cron ping `/health`) |
@@ -98,4 +99,4 @@ These tie directly to the strategy (`docs/FUTURE_IMPLEMENTATION_STRATEGY.md`) an
 `http_request_duration_seconds` (histogram), `bookings_total`, `booking_conflicts_total`, `holds_total`, `holds_confirmed_total`, `holds_expired_total` (all **implemented**), plus a future **`oversell_total` (alert if >0)**. Suggested SLOs: **oversell=0**, p95<300ms, 5xx<1%.
 
 ### Test-coverage outcome to track
-After Feature 1 (`docs/IMMEDIATE_BUILD_PLAN.md`), record `jest --coverage` for `src/index.ts` (auth + booking handlers). Current live-path coverage: **0%** → target meaningful coverage of the booking/auth logic.
+`tests/api.test.ts` now exercises the live `src/index.ts` handlers (auth, booking, holds, idempotency, expiry, reaper) via Fastify `inject` against Postgres. Run `jest --coverage` (with `DATABASE_URL` set) to quantify the live-path coverage %.

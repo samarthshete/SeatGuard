@@ -14,11 +14,10 @@ it actually exists in this repository.
 
 - **API** — Fastify + Prisma + Socket.io (`src/index.ts`). Needs **PostgreSQL only**.
 - **Frontend** — React + Vite + socket.io-client (`client/`). Static build.
-- **Worker** — optional Kafka consumer (`src/worker.ts`). Needs Redis + Kafka.
-  Not deployed in the recommended single-service setup.
 
-Redis/Kafka calls in the API are intentionally disabled ("demo mode"); the API
-performs race-free bookings using an atomic conditional `UPDATE` in PostgreSQL.
+The API performs race-free bookings using an atomic conditional `UPDATE` in
+PostgreSQL — no Redis or Kafka is involved. It also exposes Prometheus metrics
+at `/metrics` and a real stats summary at `/api/stats`.
 
 ---
 
@@ -80,11 +79,7 @@ URL so CORS + WebSocket origins match, then redeploy the API.
 # Build the API image (Dockerfile at repo root)
 docker build -t ticket-blitz-api .
 
-# Build a worker image (same Dockerfile, override the command)
-docker build -t ticket-blitz-worker .
-# run with: docker run ticket-blitz-worker npm run start:worker
-
-# Local full stack (Postgres + Redis + Redpanda)
+# Local Postgres for development
 docker-compose up -d
 ```
 
@@ -95,13 +90,12 @@ Kubernetes manifests live in `k8s/` (`deployment.yaml`, `service.yaml`,
 kubectl create configmap ticket-blitz-config --from-literal=NODE_ENV=production
 kubectl create secret generic ticket-blitz-secrets \
   --from-literal=DATABASE_URL='postgresql://...' \
-  --from-literal=REDIS_URL='redis://...' \
-  --from-literal=KAFKA_BROKERS='...'
+  --from-literal=JWT_SECRET='...'
 kubectl apply -f k8s/
 ```
 
-> Note: the k8s manifests expect images named `ticket-blitz-api:latest` and
-> `ticket-blitz-worker:latest` in a registry your cluster can pull from.
+> Note: the k8s manifests expect an image named `ticket-blitz-api:latest` in a
+> registry your cluster can pull from.
 
 ---
 
@@ -125,11 +119,8 @@ PostgreSQL is required; SSL (`?sslmode=require`) is recommended for hosted DBs.
 
 ## Required environment variables (summary)
 
-**API (required):** `DATABASE_URL`, `NODE_ENV`, `FRONTEND_URL` (+ `PORT` if not
-injected by the platform).
-
-**Worker (only if running it):** `REDIS_URL` (or `REDIS_HOST`/`REDIS_PORT`),
-`KAFKA_BROKERS` (+ `KAFKA_USERNAME`/`KAFKA_PASSWORD`/`KAFKA_MECHANISM` for cloud).
+**API (required):** `DATABASE_URL`, `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL`
+(+ `PORT` if not injected by the platform).
 
 **Tracing (optional):** `ENABLE_TRACING=true`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_SERVICE_NAME`. Tracing is off unless explicitly enabled.

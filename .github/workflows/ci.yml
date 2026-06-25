@@ -24,11 +24,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      redis:
-        image: redis:alpine
-        ports:
-          - 6379:6379
-          
+
     steps:
     - uses: actions/checkout@v4
     
@@ -56,7 +52,6 @@ jobs:
     - name: Run Jest Unit and Integration Tests
       env:
         DATABASE_URL: "postgresql://postgres:password@localhost:5432/ticketblitz"
-        REDIS_URL: "redis://localhost:6379"
       run: npx jest --coverage
       
     - name: Dry Run Docker Build (API)

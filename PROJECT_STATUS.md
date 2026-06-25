@@ -84,7 +84,7 @@ _This file is the single source of truth for "where are we and what's left." Rea
 - **Exposed shared DB password** (see pending #5) — highest-priority cleanup.
 - **Docker not built locally** (daemon down) — irrelevant to the live Render Node deploy; will get its first real build in CI when the PR is opened.
 - **Render free tier:** cold starts (~30–60s after idle); free Postgres not durable long-term.
-- **Worker / Kafka / Redis:** not deployed (optional, untested).
+- **No Kafka / Redis:** the API is a single PostgreSQL-backed service; the earlier unwired Kafka/Redis experiment was removed so the repo matches what actually runs.
 - **Token storage:** JWT in localStorage + Authorization header (fine for a demo). For hardened production consider httpOnly cookies + CSRF protection.
 - `prisma.config.ts` targets Prisma 6+ but Prisma is pinned at 5.x — currently ignored; matters on a Prisma upgrade.
 

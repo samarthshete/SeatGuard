@@ -27,7 +27,7 @@ if (process.env.ENABLE_TRACING === 'true') {
       [ATTR_SERVICE_VERSION]: '1.0.0',
     }),
     traceExporter,
-    // Default auto-instrumentations cover HTTP, Fastify, ioredis, kafkajs, etc.
+    // Default auto-instrumentations cover HTTP, Fastify, pg, etc.
     // Prisma instrumentation is handled natively by Prisma if configured.
     instrumentations: [getNodeAutoInstrumentations()],
   });

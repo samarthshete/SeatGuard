@@ -12,6 +12,12 @@ import rateLimit from '@fastify/rate-limit';
 import jwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
 import { Server } from 'socket.io';
+import {
+  registry,
+  httpRequestDuration,
+  recordBooking,
+  getBookingCounts,
+} from './metrics';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
@@ -73,12 +79,26 @@ async function buildApp(instance: FastifyInstance) {
   }
 
   // Global per-IP rate limit protects all mutating endpoints from abuse.
-  // /health is exempted so platform probes are never throttled.
+  // /health and /metrics are exempted so platform probes and Prometheus scrapes
+  // are never throttled.
   await instance.register(rateLimit, {
     global: true,
     max: Number(process.env.RATE_LIMIT_MAX) || 100,
     timeWindow: process.env.RATE_LIMIT_WINDOW || '1 minute',
-    allowList: (req) => req.url === '/health',
+    allowList: (req) => req.url === '/health' || req.url === '/metrics',
+  });
+
+  // Record request latency for every response (labelled by method/route/status
+  // so p50/p95/p99 can be derived per route in Prometheus).
+  instance.addHook('onResponse', async (request, reply) => {
+    httpRequestDuration.observe(
+      {
+        method: request.method,
+        route: request.routeOptions?.url ?? request.url,
+        status: String(reply.statusCode),
+      },
+      reply.elapsedTime / 1000,
+    );
   });
 
   await instance.register(cors, {
@@ -114,6 +134,32 @@ async function buildApp(instance: FastifyInstance) {
   // --- Health check (used by Render / Kubernetes probes) --------------------
   instance.get('/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
+  });
+
+  // --- Prometheus metrics (real, server-side) -------------------------------
+  instance.get('/metrics', async (_request, reply) => {
+    reply.header('Content-Type', registry.contentType);
+    return registry.metrics();
+  });
+
+  // --- Stats summary (real numbers for the UI dashboard) --------------------
+  // Seat counts come straight from the database; booking counters come from the
+  // metrics module. Nothing here is fabricated client-side.
+  instance.get('/api/stats', async (_request, reply) => {
+    try {
+      const [total, booked] = await Promise.all([
+        prisma.seat.count(),
+        prisma.seat.count({ where: { status: 'BOOKED' } }),
+      ]);
+      const { bookings, conflicts } = getBookingCounts();
+      return {
+        seats: { total, booked, available: total - booked },
+        bookings: { total: bookings, conflicts },
+      };
+    } catch (error) {
+      instance.log.error(error);
+      return reply.status(500).send({ error: 'Failed to fetch stats' });
+    }
   });
 
   // --- Auth: register -------------------------------------------------------
@@ -217,10 +263,12 @@ async function buildApp(instance: FastifyInstance) {
       });
 
       if (claim.count === 0) {
+        recordBooking('conflict');
         return reply.status(409).send({ error: 'Seat already taken' });
       }
 
       await prisma.booking.create({ data: { userId, seatId: seat.id } });
+      recordBooking('success');
 
       // Broadcast the update to all connected clients.
       io?.emit('seat-update', { seatNumber, status: 'BOOKED' });

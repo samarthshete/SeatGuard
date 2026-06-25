@@ -1,1037 +1,211 @@
-# 🎟️ TicketBlitz - High-Concurrency Event Booking System
+# 🎟️ TicketBlitz — High-Concurrency Event Booking Demo
 
 [![Tests](https://github.com/Abhics8/Ticket-Blitz/actions/workflows/ci.yml/badge.svg)](https://github.com/Abhics8/Ticket-Blitz/actions)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Redis](https://img.shields.io/badge/Redis-Distributed_Locking-DC382D?logo=redis)](https://redis.io/)
-[![Kafka](https://img.shields.io/badge/Kafka-Event--Driven-231F20?logo=apachekafka)](https://kafka.apache.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)](https://reactjs.org/)
+[![Fastify](https://img.shields.io/badge/Fastify-000000?style=flat&logo=fastify&logoColor=white)](https://fastify.dev/)
+[![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
-> **High-concurrency ticket booking demo with zero race conditions and real-time visualization**
+> **A real-time seat-booking demo whose core property is correctness under contention:
+> exactly one of N simultaneous bookings for the same seat succeeds — no double-booking.**
 
 > ⚠️ **PUBLIC DEMO / STAGING — NOT PRODUCTION.** The **live** demo runs a build
 > with **mock auth** (anyone can book as anyone). Real JWT auth is built and
 > tested on the `production-deploy-prep` branch but not yet deployed.
 >
-> 📍 **Current state, live URLs, and exactly what to do next:**
-> see **[PROJECT_STATUS.md](PROJECT_STATUS.md)**. Full deploy guide + security
-> checklist: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+> 📍 Current state, live URLs, and next steps: **[PROJECT_STATUS.md](PROJECT_STATUS.md)**.
+> Full deploy guide + security checklist: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+> How to generate real benchmark numbers: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**.
 
-[🚀 Live Demo](#) | [📊 API Docs](#) | [🎥 System Demo](#) | [💼 Portfolio](https://abhics8.github.io/Portfolio)
+> **Honesty note:** an earlier version of this README and repo described a
+> Redis-distributed-lock + Kafka event-sourcing architecture with a 50k-request
+> benchmark. **That subsystem was never wired into the running API** and has been
+> removed so this document matches the code that actually runs. The booking
+> correctness below is real and reproducible.
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Architecture (as it actually runs)
+
 ```mermaid
 flowchart TD
-    Client["Client\n(10,000+ concurrent)"] --> LB[Load Balancer\nNginx]
-    LB --> API[FastAPI Backend]
-    API --> LOCK{Redis\nDistributed Lock\nTTL-based lease renewal}
-    LOCK -->|Lock Acquired| DB[(PostgreSQL\nBooking Records)]
-    LOCK -->|Lock Denied| RETRY[Return: Seat Unavailable]
-    DB --> KAFKA[Kafka\nEvent Bus]
-    KAFKA --> N[Notifications\nConsumer Group]
-    KAFKA --> AN[Analytics\nConsumer Group]
-    KAFKA --> AUDIT[Audit Log\nConsumer Group]
-    API --> WS[WebSocket Server\nReal-time Updates]
-    WS --> VIZ[Engineering Visualizer\nLock Contention + Throughput + Queue Depth]
+    Client["React + Vite client"] -->|REST| API["Fastify API"]
+    Client <-->|WebSocket| WS["Socket.io"]
+    API -->|"atomic conditional UPDATE"| DB[("PostgreSQL (Prisma)")]
+    API -->|"emit seat-update"| WS
+    WS --> Client
+    API -->|"/metrics"| PROM["Prometheus scrape"]
 ```
 
-**Critical Path (booking a seat in 6 steps):**
-1. Client sends booking request → `POST /api/bookings`
-2. Redis acquires distributed lock on `seat:{id}` with TTL lease renewal
-3. PostgreSQL validates availability + creates booking record
-4. Redis releases lock
-5. Kafka publishes `BookingConfirmed` event
-6. Consumer groups handle notifications, analytics, audit asynchronously
+**Booking a seat:**
+1. Client `POST /api/book-async` with a JWT (the user comes from the verified token, never the body).
+2. The API runs a single atomic statement: `UPDATE seats SET status='BOOKED' WHERE id=? AND status='AVAILABLE'`.
+   Only the first concurrent request flips the row; the database decides the winner.
+3. Winner → a `Booking` row is created and a `seat-update` event is broadcast over Socket.io.
+4. Losers → `409 Conflict` ("seat already taken"). No lock service, no broker, no race.
+
+This is the whole trick: **the conditional `UPDATE` is the concurrency control.**
+A second, intentionally race-prone `POST /api/book-naive` endpoint exists purely to
+demonstrate the bug the safe path avoids.
 
 ---
 
-## ⚡ Exactly-Once Kafka Semantics
+## ✨ What this demonstrates
 
-Getting Kafka to exactly-once is non-trivial. Here's how it's implemented:
+- **Race-free booking under contention** — `prisma.seat.updateMany({ where: { status: 'AVAILABLE' } })`
+  guarantees exactly one winner. Proven by `scripts/concurrency-check.mjs` and the k6 `oversell` gate.
+- **Real authentication** — self-hosted JWT (`@fastify/jwt`) + bcrypt-hashed passwords; booking is
+  auth-gated; login is rate-limited.
+- **Input validation** — every mutating endpoint validates its body with Zod (400 on bad input).
+- **Real-time updates** — Socket.io broadcasts seat changes to all connected clients.
+- **Real metrics (not fabricated)** — `GET /metrics` (Prometheus via `prom-client`) exposes
+  `bookings_total`, `booking_conflicts_total`, and request-latency histograms; `GET /api/stats` returns
+  real seat/booking counts that drive the UI dashboard.
+- **Operational hygiene** — `/health` probe, per-IP rate limiting, sanitized 5xx errors, graceful
+  shutdown, non-root container, opt-in OpenTelemetry tracing.
 
-| Challenge | Solution |
+---
+
+## 🛠️ Tech stack (actual)
+
+| Layer | Technology |
 |---|---|
-| Duplicate messages | Idempotent consumers with deduplication key |
-| Message ordering | Partition key = `booking_id` guarantees per-booking ordering |
-| Failed processing | Dead-letter queue with retry + alerting |
-| Replay capability | Event sourcing — every state change is an immutable event |
+| **API** | Node.js 20+, **Fastify 5**, TypeScript |
+| **Data** | **PostgreSQL** + **Prisma 5** (ORM + migrations) |
+| **Auth** | `@fastify/jwt`, `bcryptjs` |
+| **Validation** | **Zod** |
+| **Real-time** | **Socket.io** |
+| **Rate limiting** | `@fastify/rate-limit` (per-IP) |
+| **Metrics** | **prom-client** (`/metrics`) + `/api/stats` |
+| **Tracing** | OpenTelemetry (opt-in via `ENABLE_TRACING=true`) |
+| **Frontend** | **React 19** + **Vite**, `socket.io-client` |
+| **Testing** | **Jest** (unit), **k6** + Node harness (load/concurrency) |
+| **Deploy** | Docker, Render (API), Vercel (frontend); Kubernetes manifests in `k8s/` |
 
-**Event types published:**
-```
-BookingCreated   → triggers: hold inventory, send confirmation email
-BookingLocked    → triggers: start payment timeout timer
-BookingConfirmed → triggers: issue e-ticket, update analytics
-BookingCancelled → triggers: release inventory, initiate refund
-```
-
-**Result:** Zero data loss under 50× normal load (10,000+ concurrent events). Independent scaling of each consumer group.
-
-![TicketBlitz Dashboard](assets/ticketblitz-dashboard.png)
+> There is **no** Redis, Kafka, Express, Drizzle, or message broker in this project.
 
 ---
 
-## 🎯 Problem Statement
+## 🔌 API endpoints
 
-Major ticketing platforms like Ticketmaster face **revenue losses of $15M+ annually** from race conditions during high-demand sales (Taylor Swift, Sports Finals), where simultaneous purchases cause **double-booking** and **inventory inconsistencies**. TicketBlitz eliminates these issues using **distributed Redis locks**, **optimistic concurrency control**, and **event-driven architecture** to guarantee seat uniqueness even under **high concurrent checkout requests**, while providing a **real-time engineering visualizer** that exposes the internal mechanics of distributed systems for educational purposes.
-
----
-
-## 💡 Use Cases
-
-### 🎭 **Live Events & Concerts**
-- **High-Demand Concert Sales**: Handle ticket drops for popular artists
-- **Festival Multi-Day Passes**: Complex ticket types with capacity management
-- **VIP Package Sales**: Premium ticket tiers with real-time availability
-
-### 🏟️ **Sports Venues**
-- **Season Ticket Renewals**: Coordinated seat selection across thousands of fans
-- **Playoff Game Sales**: Flash sales with extreme concurrency
-- **Stadium Seat Selection**: Interactive seat maps with instant reservation
-
-### 🎬 **Movie Theaters**
-- **Opening Night Bookings**: Premiere screenings with limited capacity
-- **Recurring Showtimes**: Continuous inventory management across time slots
-- **Group Reservations**: Multi-seat bookings with atomicity guarantees
-
-### 🎓 **Conference & Workshop Registration**
-- **Limited Workshop Spots**: Capacity-constrained registrations
-- **Early Bird Pricing**: Time-based pricing with concurrency control
-- **Group Registration**: Atomic bookings for teams/companies
+| Method | Route | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | — | Liveness/readiness probe |
+| `GET` | `/metrics` | — | Prometheus metrics |
+| `GET` | `/api/stats` | — | Real seat + booking counts (drives the dashboard) |
+| `GET` | `/api/seats` | — | List all seats |
+| `GET` | `/api/random-seat` | — | A random AVAILABLE seat (test helper) |
+| `POST` | `/api/auth/register` | — | Create account → returns JWT |
+| `POST` | `/api/auth/login` | — | Log in → returns JWT (rate-limited) |
+| `GET` | `/api/auth/me` | ✅ | Current user from token |
+| `POST` | `/api/book-async` | ✅ | **Race-free** booking (atomic conditional UPDATE) |
+| `POST` | `/api/book-naive` | ✅ | Intentionally race-prone (educational contrast) |
 
 ---
 
-## ✨ Key Features
+## 📊 Performance & correctness
 
-### ⚡ **Extreme Concurrency Handling**
-- **Extreme Concurrency** - Load tested; zero race conditions across simultaneous requests
-- **Sub-100ms Response Time** - P95 latency of 87ms under load
-- **Zero Double-Booking** - Distributed Redis locks ensure ACID guarantees at scale
-- **Optimistic Concurrency Control** - PostgreSQL row versioning prevents lost updates
+**No performance numbers are hard-coded in this repo.** The tooling to generate
+defensible ones lives in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md):
 
-### 🔄 **Real-Time Engineering Visualizer** (Unique Feature)
-- **Live System Internals** - Watch Redis locks acquire/release in real-time
-- **Transaction Visualization** - See PostgreSQL transactions commit/rollback live
-- **Kafka Event Streaming** - Observe event flow through distributed system
-- **WebSocket Updates** - Real-time inventory updates (<50ms latency)
-- **Educational Tool** - Perfect for teaching distributed systems concepts
+- **Correctness (headline):** `node scripts/concurrency-check.mjs` fires N concurrent bookings at one seat
+  and asserts **exactly 1 success + (N−1) conflicts, oversell = 0** (exits non-zero otherwise).
+- **Latency/throughput:** `k6 run load-test.js` ramps read load with real thresholds
+  (`http_req_failed < 1%`, `p95 < 300ms`) and a `successful_bookings <= 1` correctness gate.
 
-### 🏗️ **Production-Grade Architecture**
-- **Event-Driven Design** - Kafka topics for booking events, payment processing, notifications
-- **Distributed Locking** - Redis-based pessimistic locking with automatic expiration
-- **Database Transactions** - PostgreSQL isolation levels preventing phantom reads
-- **API Rate Limiting** - Token bucket algorithm (100 req/min per user)
-- **Health Monitoring** - Prometheus metrics + Grafana dashboards
+Run them against a live API + dedicated Postgres and record what you measure — the
+tables in `docs/BENCHMARKS.md` are deliberately left as "Not measured yet" until then.
 
-### 🎯 **Business Impact**
-- **99.99% Booking Success Rate** - Under normal load (<5K concurrent users)
-- **Zero Inventory Discrepancies** - Automated reconciliation every 60 seconds
-- **50% Faster Checkout** - Optimized critical path from seat selection to payment
-- **$0 Overbooking Losses** - Eliminated double-booking edge cases
+![TicketBlitz dashboard](assets/ticketblitz-dashboard.png)
 
 ---
 
-## 🏗️ Detailed System Architecture
-
-> *See the condensed Mermaid diagram at the top of this README for a quick visual overview.*
-
-### **Critical Path: Seat Reservation Flow**
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant A as API Layer
-    participant R as Redis (Lock)
-    participant D as PostgreSQL
-    participant K as Kafka
-    participant W as WebSocket Server
-
-    C->>A: POST /book (userId, seatId)
-    A->>R: SET seat:id:lock user:id EX 30 NX
-    alt Lock Acquired
-        R-->>A: OK
-        A->>D: SELECT * FROM seats FOR UPDATE
-        D-->>A: Row locked
-        A->>D: UPDATE seats SET status='BOOKED'
-        D-->>A: Commit success
-        A->>K: Produce BookingCreated Event
-        A->>W: Emit 'seat-update'
-        W-->>C: Update UI via socket (<50ms)
-        A-->>R: DEL seat:id:lock (Lua Script)
-        A-->>C: 200 OK
-    else Lock Denied
-        R-->>A: null
-        A-->>C: 409 Conflict (Seat taken)
-    end
-```
-
----
-
-## 🛠️ Tech Stack
-
-### **Frontend**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **React 18.2** | Concurrent rendering; Suspense for data fetching; 40% faster updates vs React 17 | UI framework; real-time seat map |
-| **TypeScript 5.0** | Type safety prevents 80% of runtime errors; IntelliSense boosts dev speed | End-to-end type safety |
-| **Vite 4.3** | 10x faster HMR than Webpack; ESBuild bundling; <2s cold start | Build tool; dev server |
-| **TanStack Query** | Automatic caching; optimistic updates; request deduplication | Server state management |
-| **Zustand 4.3** | Lightweight (1KB); no boilerplate; better DX than Redux | Client state management |
-| **Socket.io Client** | Automatic reconnection; binary data support; fallback to polling | WebSocket client library |
-| **Framer Motion** | 60fps animations; spring physics; gesture support | Seat selection animations |
-| **TailwindCSS 3.3** | Utility-first; JIT compilation; 90% smaller CSS vs Bootstrap | Styling framework |
-
-### **Backend - API Layer**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **Node.js 20 LTS** | Event loop handles high concurrent connections; non-blocking I/O; npm ecosystem | Runtime environment |
-| **Express.js 4.18** | Minimal overhead; middleware ecosystem; proven at scale | HTTP server framework |
-| **Socket.io Server** | Built-in pub/sub; rooms for efficient broadcasting; auto-reconnect | WebSocket server |
-| **TypeScript** | Shared types with frontend; refactoring confidence; catch bugs at compile-time | Language for type safety |
-| **Zod 3.21** | Runtime validation; TypeScript inference; 30% faster than Joi | Request/response validation |
-| **Helmet.js** | Security headers; XSS protection; CORS configuration | Security middleware |
-
-### **Database & Caching**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **PostgreSQL 15** | ACID guarantees; row-level locking; MVCC for concurrency; JSON support | Primary database |
-| **Redis 7.2** | In-memory <1ms latency; atomic operations; pub/sub; expiration policies | Distributed locks + cache |
-| **Drizzle ORM** | Type-safe queries; zero runtime overhead; SQL-like syntax; 3x faster than Prisma | Database ORM |
-| **Redis OM** | Object mapping for Redis; secondary indexes; full-text search | Redis data modeling |
-
-### **Message Streaming**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **Apache Kafka 3.5** | Distributed; fault-tolerant; 1M+ messages/sec; event replay capability | Event streaming backbone |
-| **KafkaJS** | Pure JavaScript; no native dependencies; active maintenance | Kafka client for Node.js |
-| **Schema Registry** | Avro schemas; backward compatibility; version control for events | Event schema management |
-
-### **DevOps & Deployment**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **Docker 24.0** | Consistent environments; isolated services; resource limits | Containerization |
-| **Docker Compose** | Multi-service orchestration; networking; volume management | Local development |
-| **Vercel** | Global CDN; instant rollback; zero-config deployment; serverless functions | Frontend hosting |
-| **Render** | Auto-scaling; persistent storage; zero-downtime deploys; $7/month | Backend hosting |
-| **GitHub Actions** | Native integration; matrix builds; secrets management | CI/CD pipeline |
-
-### **Monitoring & Observability**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **Prometheus** | Time-series metrics; PromQL queries; service discovery | Metrics collection |
-| **Grafana** | Beautiful dashboards; alerting; 50+ data sources | Metrics visualization |
-| **Winston** | Structured logging; multiple transports; log levels | Application logging |
-| **Sentry** | Error tracking; release tracking; performance monitoring | Error monitoring |
-
-### **Testing & Quality**
-
-| Technology | Why We Chose It | Role in System |
-|------------|----------------|----------------|
-| **Vitest** | Vite-native; 10x faster than Jest; ESM support | Unit testing |
-| **Playwright** | Cross-browser; auto-wait; screenshots; parallel execution | E2E testing |
-| **Locust** | Python-based; distributed load testing; real-time stats | Load testing (10K+ users) |
-| **K6** | Scriptable; cloud execution; threshold checks | Performance testing |
-
-## 🌐 Kubernetes & Horizontal Scaling
-
-Ticket-Blitz is natively designed to scale horizontally across commodity hardware.
-
-**To add more API instances behind a load balancer:**
-1. Our provided Kubernetes `hpa.yaml` automatically scales the fastify API layer on CPU utilization > 70%.
-2. Since the Redis lock server handles mutual exclusion, individual API instances share **zero state**.
-3. Kafka seamlessly rebalances consumer group partitions as new Worker nodes spin up.
-
-## 🌋 Chaos Engineering & Failure Matrices
-
-To prove resilience, we simulate infrastructure faults using Toxiproxy. Here is how the system degrades:
-
-| Component Failure | System Response | End-User Experience |
-|-------------------|-----------------|---------------------|
-| **Redis Crash** | API fails to acquire lock (Redis timeout); aborts booking immediately. | "Checkout unavailable" error (fail-fast prevents double booking). |
-| **Kafka Broker Down** | API buffers events in memory; blocks checkout if buffer overflows. | Checkout works until memory fills, then graceful 503 errors. |
-| **PostgreSQL Pool Full** | Transaction timeout. Redis lock expires via 30s TTL automatically. | "High traffic, try again." No phantom locking of seats. |
-
-## 🕵️ OpenTelemetry Distributed Tracing
-
-We instrument critical paths using OpenTelemetry to maintain observability:
-1. `POST /api/book` initiates a trace span in the API shell.
-2. The TraceID is injected cleanly into Kafka message headers.
-3. Workers extract the TraceID and append spans during DB updates.
-*(Trace data flows to Jaeger/Zipkin for identifying latency bottlenecks across microservice boundaries).*
-
----
-
-## 📊 Performance Metrics
-
-### **Load Testing Results**
-
-![k6 Load Testing Dashboard](.github/assets/ticketblitz_k6_dashboard.png)
-
-```
-Total Requests:        50,000
-Successful Bookings:   49,847 (99.69%)
-Failed Requests:       153 (0.31% - expected under extreme load)
-Average Response:      87ms
-P95 Latency:          124ms
-P99 Latency:          187ms
-Max Response:         412ms
-
-Concurrency Stats:
-- Users ramped up over 60 seconds
-- 5,000 simultaneous seat reservations
-- Zero race conditions detected
-- Zero double-bookings
-- Database connections: 200 (pooled)
-- Redis connections: 50 (clustered)
-```
-
-### **Real-Time Performance**
-
-```
-WebSocket Latency:
-- Message Delivery:    <50ms (average 32ms)
-- Connection Setup:    <100ms
-- Reconnection Time:   <500ms
-
-Database Performance:
-- SELECT queries:      ~15ms average
-- UPDATE queries:      ~28ms average  
-- Transaction time:    ~45ms average
-- Concurrent txns:     200+ simultaneous
-
-Redis Performance:
-- Lock acquisition:    <2ms
-- Cache reads:         <1ms
-- Pub/Sub latency:     <5ms
-```
-
-### **System Reliability**
-
-```
-Uptime:               99.7% (last 30 days)
-Error Rate:           0.3% (under peak load)
-Cache Hit Rate:       94.2%
-Database Pool:        85% utilization (peak)
-Kafka Lag:            <100ms
-```
-
----
-
-## 🚀 Quick Start
-
-> **Repository layout:** the API (Fastify + Prisma + Socket.io) lives at the
-> repo root (`src/`). The React/Vite frontend lives in `client/`. The optional
-> Kafka worker (`src/worker.ts`) requires Redis + Kafka; the API itself needs
-> only PostgreSQL.
-
-### **Prerequisites**
+## 🚀 Quick start
 
 ```bash
-Node.js 20+ (22 recommended)
-PostgreSQL 15+            # required by the API
-Docker & Docker Compose  # optional — easiest way to run Postgres locally
-Redis 7+ / Kafka 3.5+    # optional — only for the worker (src/worker.ts)
-```
-
-### **Local Development Setup**
-
-```bash
-# 1. Clone
+# 1. Clone + install the API (postinstall runs `prisma generate`)
 git clone https://github.com/Abhics8/Ticket-Blitz.git
 cd Ticket-Blitz
-
-# 2. Install API dependencies (runs `prisma generate` via postinstall)
 npm install
 
-# 3. Configure environment
-cp .env.example .env          # then set DATABASE_URL (and FRONTEND_URL)
+# 2. Configure environment
+cp .env.example .env          # set DATABASE_URL, JWT_SECRET, FRONTEND_URL
 
-# 4. Start infrastructure (Postgres, Redis, Redpanda/Kafka)
-docker-compose up -d          # or point DATABASE_URL at any Postgres
+# 3. Start Postgres (or point DATABASE_URL at any Postgres)
+docker-compose up -d          # Postgres on :5432
 
-# 5. Apply database migrations
-npx prisma migrate deploy     # use `npx prisma migrate dev` while iterating
+# 4. Apply migrations (the API also auto-seeds 100 seats on first boot)
+npx prisma migrate deploy
+npm run db:seed               # optional: 10,000-seat dataset
 
-# 6. (Optional) Seed 10,000 demo seats — the API also auto-seeds 100 on first
-#    boot if the seats table is empty, so this step is not required.
-npm run db:seed
-
-# 7. Run the API (http://localhost:3000)
+# 5. Run the API (http://localhost:3000)
 npm run dev:api
 
-# 8. Run the frontend in a second terminal (http://localhost:5173)
+# 6. Run the frontend in a second terminal (http://localhost:5173)
 cd client
 npm install
-echo 'VITE_API_URL="http://localhost:3000"' > .env   # optional; this is the default
 npm run dev
 ```
 
-### **Quality gates**
+### Quality gates
 
 ```bash
 npm run lint        # ESLint (flat config)
 npm run typecheck   # tsc --noEmit
 npm test            # Jest unit tests
 npm run build       # compile API -> dist/
+
+# Prove concurrency correctness against a running API:
+npm run concurrency-check
 ```
 
-### **Production Deployment**
+### Deploy
 
-**Recommended:** API on **Render** (`render.yaml` included), frontend on **Vercel**.
-
-```bash
-# --- Backend (Render) ---
-# Render reads render.yaml: it provisions Postgres, runs
-#   build:  npm install && npm run build
-#   start:  npm run start:api   (== prisma migrate deploy && node dist/index.js)
-# Set FRONTEND_URL in the Render dashboard to your Vercel URL.
-
-# --- Frontend (Vercel) ---
-# Set Root Directory = client
-#   build command:    npm run build
-#   output directory: dist
-#   env var:          VITE_API_URL = https://<your-render-api>.onrender.com
-
-# --- Container / Kubernetes (optional) ---
-docker build -t ticket-blitz-api .          # API image (Dockerfile at root)
-docker build -t ticket-blitz-worker .       # worker: override CMD to start:worker
-kubectl apply -f k8s/
-```
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide, required
-environment variables, and the production security checklist.
+API on **Render** (`render.yaml` Blueprint), frontend on **Vercel** (root = `client/`).
+See [DEPLOYMENT.md](DEPLOYMENT.md) for required env vars and the security checklist.
+Container/Kubernetes manifests are in `k8s/` (API Deployment + Service + HPA).
 
 ---
 
-## 📖 Usage Examples
-
-### **1. Basic Seat Reservation**
-
-```typescript
-// Frontend - Reserve a seat
-import { useReserveSeat } from '@/hooks/useReserveSeat';
-
-function SeatMap() {
-  const { reserveSeat, isLoading } = useReserveSeat();
-
-  const handleSeatClick = async (seatId: string) => {
-    try {
-      const reservation = await reserveSeat({
-        seatId,
-        eventId: 'event_123',
-        userId: 'user_456'
-      });
-      
-      console.log('Reserved:', reservation);
-      // Reservation expires in 10 minutes
-    } catch (error) {
-      if (error.code === 'SEAT_TAKEN') {
-        toast.error('Seat already reserved!');
-      }
-    }
-  };
-
-  return <SeatGrid onSeatClick={handleSeatClick} />;
-}
-```
-
-### **2. Real-Time Updates**
-
-```typescript
-// Listen to seat status changes
-import { useSocket } from '@/hooks/useSocket';
-
-function RealtimeSeatMap({ eventId }) {
-  const socket = useSocket();
-  const [seats, setSeats] = useState([]);
-
-  useEffect(() => {
-    // Subscribe to event-specific updates
-    socket.emit('join:event', eventId);
-
-    // Listen for seat reservations
-    socket.on('seat:reserved', (data) => {
-      setSeats(prev => prev.map(seat => 
-        seat.id === data.seatId 
-          ? { ...seat, status: 'reserved' }
-          : seat
-      ));
-    });
-
-    // Listen for reservation expirations
-    socket.on('seat:available', (data) => {
-      setSeats(prev => prev.map(seat => 
-        seat.id === data.seatId 
-          ? { ...seat, status: 'available' }
-          : seat
-      ));
-    });
-
-    return () => {
-      socket.emit('leave:event', eventId);
-      socket.off('seat:reserved');
-      socket.off('seat:available');
-    };
-  }, [eventId]);
-
-  return <SeatVisualization seats={seats} />;
-}
-```
-
-### **3. Backend - Seat Reservation with Locking**
-
-```typescript
-// Backend service - Distributed lock implementation
-import { Redis } from 'ioredis';
-import { db } from './db';
-
-class BookingService {
-  private redis: Redis;
-  
-  async reserveSeat(seatId: string, userId: string): Promise<Reservation> {
-    const lockKey = `seat:${seatId}:lock`;
-    const lockValue = userId;
-    const lockTTL = 30; // seconds
-
-    // 1. Acquire distributed lock (Redis)
-    const acquired = await this.redis.set(
-      lockKey, 
-      lockValue, 
-      'EX', lockTTL, 
-      'NX' // Only set if not exists
-    );
-
-    if (!acquired) {
-      throw new Error('SEAT_LOCKED');
-    }
-
-    try {
-      // 2. Start database transaction
-      return await db.transaction(async (trx) => {
-        // 3. Check availability with row lock
-        const seat = await trx('seats')
-          .where({ id: seatId, status: 'available' })
-          .forUpdate() // Row-level lock
-          .first();
-
-        if (!seat) {
-          throw new Error('SEAT_UNAVAILABLE');
-        }
-
-        // 4. Optimistic concurrency check
-        const updated = await trx('seats')
-          .where({ 
-            id: seatId, 
-            version: seat.version 
-          })
-          .update({
-            status: 'reserved',
-            user_id: userId,
-            version: seat.version + 1,
-            reserved_at: new Date()
-          });
-
-        if (updated === 0) {
-          throw new Error('CONCURRENT_UPDATE');
-        }
-
-        // 5. Create reservation record
-        const [reservation] = await trx('reservations')
-          .insert({
-            seat_id: seatId,
-            user_id: userId,
-            expires_at: new Date(Date.now() + 10 * 60 * 1000) // 10 min
-          })
-          .returning('*');
-
-        // 6. Publish Kafka event
-        await this.publishEvent('seat.reserved', {
-          seatId,
-          userId,
-          timestamp: Date.now()
-        });
-
-        return reservation;
-      });
-    } finally {
-      // 7. Release lock
-      await this.redis.del(lockKey);
-    }
-  }
-}
-```
-
-### **4. Kafka Event Producer**
-
-```typescript
-// Publish events to Kafka
-import { Kafka } from 'kafkajs';
-
-const kafka = new Kafka({
-  clientId: 'ticket-blitz-api',
-  brokers: ['localhost:9092']
-});
-
-const producer = kafka.producer();
-
-async function publishSeatReserved(data: SeatReservedEvent) {
-  await producer.send({
-    topic: 'seat.reserved',
-    messages: [{
-      key: data.seatId,
-      value: JSON.stringify(data),
-      headers: {
-        'event-type': 'SeatReserved',
-        'event-version': '1.0',
-        'timestamp': Date.now().toString()
-      }
-    }]
-  });
-}
-```
-
----
-
-## 🔍 Real-Time Engineering Visualizer
-
-### **Unique Feature: System Internals Dashboard**
-
-TicketBlitz includes an educational dashboard showing internal system behavior in real-time:
-
-```typescript
-// Watch Redis locks in action
-<RedisDashboard>
-  <LockVisualization>
-    seat:A12:lock → ACQUIRED by user_789 (expires in 28s)
-    seat:B05:lock → RELEASED by user_456
-    seat:C19:lock → WAITING (queue: 3 users)
-  </LockVisualization>
-</RedisDashboard>
-
-// PostgreSQL transaction log
-<TransactionMonitor>
-  TXN-12847: BEGIN
-    → SELECT * FROM seats WHERE id=123 FOR UPDATE
-    → UPDATE seats SET status='reserved' WHERE id=123
-    ✓ COMMIT (45ms)
-  
-  TXN-12848: BEGIN
-    → SELECT * FROM seats WHERE id=123 FOR UPDATE
-    ✗ ROLLBACK (version mismatch)
-</TransactionMonitor>
-
-// Kafka event stream
-<KafkaStreamViewer>
-  seat.reserved    → {seatId: "A12", userId: "789", ts: 1705536847}
-  payment.pending  → {reservationId: "rsv_xyz", amount: 150.00}
-  email.queued     → {to: "user@example.com", template: "confirmation"}
-</KafkaStreamViewer>
-```
-
-This visualization makes TicketBlitz an **excellent teaching tool** for distributed systems concepts.
-
-> **Watch the system in action:**
-> ![Real-Time Visualizer Demo](assets/visualizer-demo.gif)
-
----
-
-## 🧠 What I Learned
-
-### **1. Distributed Locking is Harder Than It Looks**
-
-**Challenge**: Initial implementation used simple Redis locks but had deadlock edge cases when API server crashed mid-transaction.
-
-**Solution Implemented**:
-- Added automatic lock expiration (30s TTL) to prevent indefinite locks
-- Implemented lock extension for long-running operations
-- Built lock monitoring dashboard to detect stuck locks
-- Added health checks to release locks on server shutdown
-
-**Code Example**:
-```typescript
-// Incorrect: No expiration
-await redis.set(`lock:${seatId}`, userId); // ❌ Locks forever if server crashes
-
-// Correct: With expiration and retry logic
-const lockAcquired = await redis.set(
-  `lock:${seatId}`, 
-  userId, 
-  'EX', 30,  // Expire after 30 seconds
-  'NX'        // Only if not exists
-);
-
-// Extend lock for long operations
-setInterval(() => {
-  redis.expire(`lock:${seatId}`, 30); // Reset TTL
-}, 20000); // Every 20 seconds
-```
-
-**Key Takeaway**: Always set lock expiration and handle edge cases (crashes, network failures, zombie processes).
-
----
-
-### **2. WebSocket Connection Management at Scale**
-
-**Challenge**: With high concurrent connections, server ran out of file descriptors and crashed every 2 hours.
-
-**Solution Implemented**:
-- Increased OS file descriptor limit (`ulimit -n 65536`)
-- Implemented connection pooling with max connections per IP
-- Added client heartbeat/ping-pong to detect dead connections
-- Built auto-reconnection with exponential backoff on client
-- Implemented room-based broadcasting (don't send to all active users)
-
-**Metrics Improvement**:
-```
-Before: 
-- Max connections: ~2,000 (crashes)
-- Memory per connection: 5MB
-- Total memory: 10GB+ (OOM crashes)
-
-After:
-- Max connections: Stable under extreme load
-- Memory per connection: 500KB (10x reduction)
-- Total memory: 5GB (stable)
-```
-
-**Key Takeaway**: WebSockets are stateful - manage connection lifecycle carefully, especially cleanup.
-
----
-
-### **3. Optimistic vs Pessimistic Concurrency Control**
-
-**Challenge**: Needed to handle 5K users trying to book the same seat simultaneously.
-
-**Solution Implemented**:
-Used **hybrid approach**:
-- **Redis pessimistic lock** (first line of defense)
-- **Database optimistic lock** (version column as backup)
-- **Row-level locking** (`FOR UPDATE`) for safety
-
-```typescript
-// Pessimistic: Blocks other transactions
-await db.transaction(async (trx) => {
-  const seat = await trx('seats')
-    .where({ id: seatId })
-    .forUpdate() // Blocks until lock released
-    .first();
-  
-  // Do work...
-});
-
-// Optimistic: Allows concurrent reads, fails on conflict
-await db('seats')
-  .where({ id: seatId, version: currentVersion })
-  .update({ 
-    status: 'reserved',
-    version: currentVersion + 1  // Increment version
-  });
-```
-
-**Trade-offs Learned**:
-- Pessimistic: Higher contention but guaranteed consistency
-- Optimistic: Better performance but retry logic needed
-- Hybrid: Best of both worlds for hot data paths
-
-**Key Takeaway**: Choose locking strategy based on contention level - use pessimistic for hot seats, optimistic for regular inventory.
-
----
-
-### **4. Kafka Consumer Lag Under Load**
-
-**Challenge**: During peak load, Kafka consumers fell 5+ minutes behind, causing stale UI updates.
-
-**Solution Implemented**:
-- Increased partition count (1 → 16) for parallel processing
-- Added consumer group with 8 instances for horizontal scaling
-- Implemented batch processing (100 messages at once)
-- Used Kafka compression (Snappy) for 40% bandwidth reduction
-- Built lag monitoring with alerts (>1000 messages triggers scale-up)
-
-**Metrics**:
-```
-Before:
-- Partitions: 1
-- Consumers: 1
-- Throughput: 500 msg/sec
-- Lag: 5 minutes (300K backlog)
-
-After:
-- Partitions: 16
-- Consumers: 8
-- Throughput: 8,000 msg/sec (16x)
-- Lag: <100ms (<1K backlog)
-```
-
-**Key Takeaway**: Kafka partitions = parallelism - design for scale from day one.
-
----
-
-### **5. Database Connection Pool Exhaustion**
-
-**Challenge**: Under load, API server stalled with "Connection pool timeout" errors.
-
-**Solution Implemented**:
-- Increased pool size dynamically based on load (10 → 200)
-- Added connection timeout (5s) to prevent indefinite waits
-- Implemented query timeout (30s) to kill slow queries
-- Built connection pool monitoring dashboard
-- Used read replicas for reporting queries (offload primary)
-
-```typescript
-// Poor: Fixed pool size
-const pool = new Pool({ max: 10 }); // ❌ Exhausted under load
-
-// Better: Dynamic pool with timeouts
-const pool = new Pool({
-  min: 10,
-  max: 200,
-  acquireTimeoutMillis: 5000,    // Fail fast if no connection
-  idleTimeoutMillis: 30000,      // Close idle connections
-  connectionTimeoutMillis: 2000, // Connection establishment timeout
-  statementTimeout: 30000        // Query timeout
-});
-```
-
-**Key Takeaway**: Connection pools are finite resources - monitor, timeout, and scale appropriately.
-
----
-
-### **6. Race Condition Debugging**
-
-**Challenge**: 0.1% of bookings resulted in double-booking despite locks. Took 3 days to debug.
-
-**Solution Implemented**:
-- Added extensive logging with request IDs for tracing
-- Built distributed tracing (correlation IDs across services)
-- Implemented idempotency keys for duplicate request detection
-- Added database constraints as final safety net
-
-```sql
--- Constraint: Seat can only be reserved once
-ALTER TABLE seats 
-ADD CONSTRAINT unique_active_reservation 
-UNIQUE (id) WHERE status = 'reserved';
-
--- This caught 47 race conditions in testing!
-```
-
-**Root Cause**: Clock skew between API servers caused lock timeouts to vary.
-
-**Key Takeaway**: Race conditions are probabilistic - you need multiple layers of defense (locks + optimistic + constraints).
-
----
-
-### **7. WebSocket Memory Leaks**
-
-**Challenge**: Server memory grew 500MB/hour, crashing after 8 hours.
-
-**Solution Implemented**:
-- Used Chrome DevTools memory profiler to find leak
-- Found orphaned event listeners not being removed on disconnect
-- Implemented proper cleanup in `disconnect` event handler
-- Added WeakMap for client state (auto-garbage collected)
-
-```typescript
-// Memory leak
-socket.on('disconnect', () => {
-  // ❌ Forgot to remove listeners
-});
-
-// Correct cleanup
-socket.on('disconnect', () => {
-  socket.removeAllListeners(); // ✅
-  clientMap.delete(socket.id);
-  clearInterval(heartbeatInterval);
-});
-```
-
-**Key Takeaway**: WebSocket servers are long-running - profile memory regularly and clean up on disconnect.
-
----
-
-### **8. Frontend State Management Hell**
-
-**Challenge**: Managing real-time seat updates + user selections + checkout state became spaghetti code.
-
-**Solution Implemented**:
-- Split state into layers: Server state (TanStack Query) + Client state (Zustand)
-- Server state = single source of truth from WebSocket
-- Optimistic updates with rollback on conflict
-- Used finite state machine for checkout flow (XState)
-
-```typescript
-// Poor: Mixed concerns
-const [seats, setSeats] = useState([]);
-const [loading, setLoading] = useState(false);
-const [selected, setSelected] = useState(null);
-// 🔥 State update race conditions everywhere
-
-// Better: Separation of concerns
-// Server state
-const { data: seats } = useQuery('seats', fetchSeats);
-
-// Client state
-const selectedSeat = useStore(state => state.selectedSeat);
-
-// Real-time updates
-useWebSocket('seat:update', (update) => {
-  queryClient.setQueryData('seats', (old) => 
-    updateSeat(old, update) // Optimistic update
-  );
-});
-```
-
-**Key Takeaway**: Separate server state (cache) from client state (UI) for sanity in real-time apps.
-
----
-
-### **9. Load Testing Revealed Hidden Bottlenecks**
-
-**Challenge**: System worked perfectly with 100 users but collapsed at 1,000.
-
-**Load Testing Insights**:
-- Bottleneck #1: JSON serialization took 40% of CPU (switched to faster-json-stringify)
-- Bottleneck #2: Database query N+1 problem (added DataLoader)
-- Bottleneck #3: Unindexed database columns (added composite indexes)
-
-**Performance Improvements**:
-```
-JSON serialization:  150ms → 15ms (10x faster)
-Database queries:    500ms → 50ms (10x faster)  
-Total latency:       800ms → 87ms (9x faster)
-```
-
-**Key Takeaway**: Never trust your assumptions - load test early and profile under realistic conditions.
-
----
-
-### **10. Event-Driven Architecture Complexity**
-
-**Challenge**: Debugging issues across distributed services (API → Kafka → Consumer) was nightmare-ish.
-
-**Solution Implemented**:
-- Added correlation IDs to every event
-- Built Kafka message browser UI
-- Implemented saga pattern for complex workflows
-- Added event replay for testing
-
-**Architecture Learning**:
-```
-Synchronous (Before):
-API → Database → Response
-- Simple to debug
-- Tight coupling
-- Synchronous bottleneck
-
-Asynchronous (After):
-API → Kafka → Consumer → Database
-- Complex debugging
-- Loose coupling
-- Asynchronous scalability
-```
-
-**Key Takeaway**: Event-driven architecture trades immediate simplicity for long-term scalability - invest in observability.
-
----
-
-## 🎯 Future Enhancements
-
-- [ ] **Dynamic Pricing**: Surge pricing based on demand (Uber-like)
-- [ ] **Waitlist Management**: Auto-offer released seats to waitlist users
-- [ ] **Mobile App**: React Native app with offline support
-- [ ] **Payment Integration**: Stripe/PayPal for actual transactions
-- [ ] **Fraud Detection**: ML model to detect scalper bots
-- [ ] **Analytics Dashboard**: Real-time sales metrics and insights
-- [ ] **Multi-Currency**: Support for international bookings
-- [ ] **Kubernetes Deployment**: Auto-scaling based on traffic
-
----
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 Ticket-Blitz/
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── SeatMap.tsx
-│   │   │   ├── RealtimeVisualizer.tsx
-│   │   │   └── CheckoutFlow.tsx
-│   │   ├── hooks/
-│   │   │   ├── useWebSocket.ts
-│   │   │   ├── useReserveSeat.ts
-│   │   │   └── useOptimistic.ts
-│   │   ├── store/
-│   │   │   └── bookingStore.ts
-│   │   └── App.tsx
-│   ├── package.json
-│   └── vite.config.ts
-├── backend/
-│   ├── src/
-│   │   ├── services/
-│   │   │   ├── booking.service.ts
-│   │   │   ├── lock.service.ts
-│   │   │   └── kafka.service.ts
-│   │   ├── routes/
-│   │   │   ├── seats.route.ts
-│   │   │   └── events.route.ts
-│   │   ├── websocket/
-│   │   │   └── socketServer.ts
-│   │   ├── db/
-│   │   │   ├── migrations/
-│   │   │   └── seeds/
-│   │   └── server.ts
-│   ├── package.json
-│   └── tsconfig.json
-├── kafka/
-│   ├── producers/
-│   ├── consumers/
-│   └── schemas/
-├── docker-compose.yml
-├── k8s/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   └── ingress.yaml
-└── tests/
-    ├── load/
-    │   └── locustfile.py
-    └── e2e/
-        └── booking.spec.ts
+├── src/
+│   ├── index.ts          # Fastify app: auth, seats, booking, /metrics, /api/stats
+│   ├── metrics.ts        # prom-client registry + booking counters
+│   ├── tracing.ts        # opt-in OpenTelemetry bootstrap
+│   └── lib/
+│       └── state-machine.ts
+├── client/               # React + Vite frontend (seat grid, auth, live stats)
+├── prisma/               # schema.prisma + migrations + seed
+├── scripts/
+│   └── concurrency-check.mjs   # no-k6 oversell proof
+├── load-test.js          # k6 load test (oversell + read-load scenarios)
+├── tests/                # Jest unit tests
+├── docs/                 # architecture, decisions, benchmarks, roadmap
+├── k8s/                  # Kubernetes manifests (API)
+├── docker-compose.yml    # local Postgres
+└── render.yaml           # Render Blueprint
 ```
 
 ---
 
-## 🤝 Contributing
+## 🎯 Honest limitations / future work
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+- **Demo/staging, not production** — single event, no payments, no seat *holds* (booking is immediate).
+- **Single API instance** for real-time — multi-instance Socket.io would need a shared adapter.
+- **Live-path test coverage** is still being built out (current tests cover unit logic, not the HTTP handlers).
+- Roadmap and trade-off analysis live in [`docs/`](docs/) (`ROADMAP.md`, `DECISIONS.md`, `V2_ARCHITECTURE_PROPOSAL.md`).
 
 ---
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **Inspiration**: Production ticketing systems at Ticketmaster, StubHub, and Eventbrite
-- **Distributed Systems**: Martin Kleppmann's "Designing Data-Intensive Applications"
-- **Load Testing**: Inspired by real-world concert sales (Taylor Swift, BTS)
-- **Community**: Thanks to the distributed systems and Node.js communities
-
----
+MIT — see [LICENSE](LICENSE).
 
 ## 👤 Author
 
@@ -1040,19 +214,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 [![Portfolio](https://img.shields.io/badge/Portfolio-abhics8.github.io-1B2A4A)](https://abhics8.github.io/Portfolio)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin)](https://www.linkedin.com/in/abhi-bhardwaj-23b0961a0/)
 [![GitHub](https://img.shields.io/badge/GitHub-Abhics8-181717?logo=github)](https://github.com/Abhics8)
-
----
-
-## ⭐ Show Your Support
-
-If this project helped you understand distributed systems, please:
-- ⭐ Star this repository
-- 🍴 Fork and experiment
-- 📢 Share with your network
-- 🐛 Report issues or suggest improvements
-
----
-
-**Built with ❤️ for the distributed systems community**
-
-*Last Updated: January 2026*

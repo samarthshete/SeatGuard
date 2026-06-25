@@ -1,7 +1,6 @@
 services:
   # TicketBlitz API (Fastify + Prisma + Socket.io)
-  # The API uses only PostgreSQL. Redis/Kafka are required only by the optional
-  # worker (src/worker.ts), which is not part of this single-service deploy.
+  # The API uses only PostgreSQL — no Redis or Kafka.
   #
   # No database is created here (Render free tier allows only one free Postgres).
   # Provide DATABASE_URL manually in the dashboard, pointing at any Postgres.

@@ -47,13 +47,29 @@ function App() {
   const [pendingSeats, setPendingSeats] = useState<Set<number>>(new Set());
 
   const [metrics, setMetrics] = useState({ booked: 0, available: 100 });
-  const [telemetry, setTelemetry] = useState({
-    locksAcquired: 0,
-    kafkaEvents: 0,
-    dbWrites: 0,
-    lastActionType: 'DB' as 'LOCK' | 'KAFKA' | 'DB',
-    lastActionMessage: 'System Ready'
-  });
+
+  // Real stats from the API's GET /api/stats endpoint (server-computed, not
+  // fabricated client-side) plus the latest human-readable event message.
+  const [stats, setStats] = useState({ booked: 0, available: 100, conflicts: 0 });
+  const [lastMessage, setLastMessage] = useState('System Ready');
+
+  const fetchStats = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/stats`);
+      if (!res.ok) return;
+      const data: {
+        seats: { total: number; booked: number; available: number };
+        bookings: { total: number; conflicts: number };
+      } = await res.json();
+      setStats({
+        booked: data.seats.booked,
+        available: data.seats.available,
+        conflicts: data.bookings.conflicts,
+      });
+    } catch {
+      // Stats are best-effort; ignore transient failures.
+    }
+  };
 
   useEffect(() => {
     // 0. Initial Data Fetch
@@ -68,16 +84,22 @@ function App() {
           status: s.status as SeatStatus
         }));
         setSeats(mappedSeats);
-        setTelemetry(prev => ({ ...prev, lastActionMessage: "System Synchronized" }));
+        setLastMessage('System Synchronized');
       } catch (err) {
         console.error("Failed to sync seats:", err);
       }
     };
     fetchSeats();
+    fetchStats();
 
-    // Listen for updates
-    socket.on('seat-update', (data: { seatNumber: number; status: SeatStatus }) => {
-      // console.log("Update received:", data);
+    // Refresh real stats periodically so the dashboard stays accurate.
+    const statsInterval = setInterval(fetchStats, 5000);
+    return () => clearInterval(statsInterval);
+  }, []);
+
+  useEffect(() => {
+    // Listen for real-time seat updates broadcast by the API.
+    const onSeatUpdate = (data: { seatNumber: number; status: SeatStatus }) => {
       setSeats(prev => prev.map(seat => {
         if (seat.id === data.seatNumber) {
           // Remove from pending if it was pending
@@ -86,21 +108,18 @@ function App() {
             newPending.delete(seat.id);
             setPendingSeats(newPending);
           }
-          setTelemetry(prev => ({
-            ...prev,
-            kafkaEvents: prev.kafkaEvents + 1,
-            dbWrites: prev.dbWrites + 1,
-            lastActionType: 'KAFKA',
-            lastActionMessage: `Confirmed: Seat ${data.seatNumber}`
-          }));
           return { ...seat, status: data.status };
         }
         return seat;
       }));
-    });
+      setLastMessage(`Confirmed: Seat ${data.seatNumber} booked`);
+      // Pull fresh server-side numbers for the stats panel.
+      fetchStats();
+    };
 
+    socket.on('seat-update', onSeatUpdate);
     return () => {
-      socket.off('seat-update');
+      socket.off('seat-update', onSeatUpdate);
     };
   }, [pendingSeats]);
 
@@ -117,11 +136,7 @@ function App() {
 
     // Booking requires authentication.
     if (!token) {
-      setTelemetry(prev => ({
-        ...prev,
-        lastActionType: 'DB',
-        lastActionMessage: 'Please log in to book a seat'
-      }));
+      setLastMessage('Please log in to book a seat');
       return;
     }
 
@@ -130,18 +145,9 @@ function App() {
     setSeats(prev => prev.map(s =>
       s.id === seat.id ? { ...s, status: 'PENDING' } : s
     ));
+    setLastMessage(`Booking Seat ${seat.id}…`);
 
     try {
-      // 2. Fire and Forget (Async Architecture)
-      // We don't wait for the booking confirmation here.
-      // We wait for the Websocket event to turn it Red.
-      setTelemetry(prev => ({
-        ...prev,
-        locksAcquired: prev.locksAcquired + 1,
-        lastActionType: 'LOCK',
-        lastActionMessage: `Checking Lock: Seat ${seat.id}`
-      }));
-
       const res = await fetch(`${API_URL}/api/book-async`, {
         method: 'POST',
         headers: {
@@ -160,22 +166,22 @@ function App() {
           n.delete(seat.id);
           return n;
         });
-        setTelemetry(prev => ({ ...prev, lastActionMessage: 'Session expired — please log in again' }));
+        setLastMessage('Session expired — please log in again');
         return;
       }
 
       if (res.status === 409) {
-        // Seat was actually already booked (race condition or stale state)
-        // Correct the UI to show it as BOOKED
+        // Seat was actually already booked (lost the race) — correct the UI.
         setSeats(prev => prev.map(s =>
           s.id === seat.id ? { ...s, status: 'BOOKED' } : s
         ));
-        // Remove from pending
         setPendingSeats(prev => {
           const newSet = new Set(prev);
           newSet.delete(seat.id);
           return newSet;
         });
+        setLastMessage(`Seat ${seat.id} already taken (409)`);
+        fetchStats();
       } else if (!res.ok) {
         // Other errors (500, etc) - Revert
         setSeats(prev => prev.map(s =>
@@ -186,14 +192,13 @@ function App() {
           newSet.delete(seat.id);
           return newSet;
         });
+        setLastMessage(`Booking failed for Seat ${seat.id}`);
       }
 
-      // If 200 OK, we do nothing and wait for Socket event
-      // to confirm the booking (and transition options).
+      // If 200 OK, we wait for the socket 'seat-update' event to confirm.
 
     } catch (err) {
       console.error("Booking request failed", err);
-      // Revert on failure (optional for this simple demo)
       setSeats(prev => prev.map(s =>
         s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s
       ));
@@ -202,6 +207,7 @@ function App() {
         newSet.delete(seat.id);
         return newSet;
       });
+      setLastMessage(`Booking request failed for Seat ${seat.id}`);
     }
   };
 
@@ -240,10 +246,10 @@ function App() {
         ))}
       </div>
 
-      <Visualizer metrics={telemetry} />
+      <Visualizer stats={{ ...stats, lastMessage }} />
 
       <p style={{ marginTop: '2rem', color: '#666', fontSize: '0.8rem' }}>
-        Backend: Node.js + Fastify + Redis + Kafka | Frontend: React + Socket.io
+        Backend: Node.js + Fastify + Prisma + PostgreSQL | Real-time: Socket.io | Frontend: React + Vite
       </p>
     </div>
   );

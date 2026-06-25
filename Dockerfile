@@ -36,5 +36,4 @@ COPY package*.json ./
 EXPOSE 3000
 USER node
 
-# Default to the API. The worker image overrides this with: npm run start:worker
 CMD ["npm", "run", "start:api"]

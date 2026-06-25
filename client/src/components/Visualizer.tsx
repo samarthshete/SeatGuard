@@ -1,68 +1,65 @@
 import { useEffect, useState } from 'react';
 
-interface MetricRecord {
+interface LogRecord {
     id: string;
-    type: 'LOCK' | 'KAFKA' | 'DB';
     message: string;
     timestamp: Date;
 }
 
-export interface TelemetryMetrics {
-    locksAcquired: number;
-    kafkaEvents: number;
-    dbWrites: number;
-    lastActionType: 'LOCK' | 'KAFKA' | 'DB';
-    lastActionMessage: string;
+// Real stats fetched from the API's GET /api/stats endpoint. These are NOT
+// fabricated client-side counters — every value is computed by the server.
+export interface LiveStats {
+    booked: number;
+    available: number;
+    conflicts: number;
+    lastMessage: string;
 }
 
-export default function Visualizer({ metrics }: { metrics: TelemetryMetrics }) {
-    const [logs, setLogs] = useState<MetricRecord[]>([]);
+export default function Visualizer({ stats }: { stats: LiveStats }) {
+    const [logs, setLogs] = useState<LogRecord[]>([]);
 
-    const isConnected = metrics.kafkaEvents > 0 || metrics.locksAcquired > 0;
+    const isLive = stats.booked + stats.available > 0;
 
-    // Append a bounded (last-10) log entry whenever the parent's telemetry
-    // changes. This intentionally mirrors an external event stream into local
-    // state; the set-state-in-effect rule is a perf heuristic and is safe here.
+    // Append a bounded (last-10) log entry whenever the latest message changes.
     useEffect(() => {
-        const newLog: MetricRecord = {
+        const newLog: LogRecord = {
             id: Math.random().toString(36).slice(2, 11),
-            type: metrics.lastActionType || 'DB',
-            message: metrics.lastActionMessage || 'System Idle',
+            message: stats.lastMessage || 'System Idle',
             timestamp: new Date()
         };
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setLogs(prev => [newLog, ...prev].slice(0, 10));
-    }, [metrics]);
+    }, [stats.lastMessage]);
 
     return (
         <div className="visualizer-container animate-in fade-in slide-in-from-bottom-5">
             <div className="visualizer-header">
-                <h3>Engineering Telemetry 🛰️</h3>
-                <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
+                <h3>Live Stats 📊</h3>
+                <div className={`status-pill ${isLive ? 'online' : 'offline'}`}>
                     <span className="dot"></span>
-                    {isConnected ? 'Network Live' : 'Systems Standby'}
+                    {isLive ? 'Live (server data)' : 'Connecting…'}
                 </div>
             </div>
 
             <div className="telemetry-grid">
                 <div className="telemetry-card">
-                    <label>Redis Locks</label>
-                    <div className="val">{metrics.locksAcquired || 0}</div>
+                    <label>Booked</label>
+                    <div className="val">{stats.booked}</div>
                 </div>
                 <div className="telemetry-card">
-                    <label>Kafka Events</label>
-                    <div className="val">{metrics.kafkaEvents || 0}</div>
+                    <label>Available</label>
+                    <div className="val">{stats.available}</div>
                 </div>
                 <div className="telemetry-card">
-                    <label>DB Writes</label>
-                    <div className="val">{metrics.dbWrites || 0}</div>
+                    <label>Conflicts (409)</label>
+                    <div className="val">{stats.conflicts}</div>
                 </div>
             </div>
 
             <div className="live-log">
                 {logs.map(log => (
                     <div key={log.id} className="log-entry">
-                        <span className={`tag ${log.type.toLowerCase()}`}>{log.type}</span>
+                        <span className="tag db">EVENT</span>
                         <span className="msg">{log.message}</span>
                         <span className="time">{log.timestamp.toLocaleTimeString()}</span>
                     </div>
@@ -150,8 +147,6 @@ export default function Visualizer({ metrics }: { metrics: TelemetryMetrics }) {
                     padding: 1px 4px;
                     border-radius: 3px;
                 }
-                .tag.lock { background: #ff4444; }
-                .tag.kafka { background: #4444ff; }
                 .tag.db { background: #00ff88; color: #000; }
                 .msg { flex: 1; color: #ccc; }
                 .time { color: #555; }
